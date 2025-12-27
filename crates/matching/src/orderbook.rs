@@ -66,7 +66,8 @@ impl PriceLevel {
 	}
 
 	pub(crate) fn remove_first_order(&mut self) -> Option<Order> {
-		if let Some(order) = self.orders.pop() {
+		if !self.orders.is_empty() {
+			let order = self.orders.remove(0);
 			self.total_size -= order.remaining_size;
 			Some(order)
 		} else {

@@ -6,7 +6,7 @@
 
 </div>
 
-A self-hosted, high-performance orderbook and matching infrastructure that enables protocols to combine off-chain speed with on-chain security—without custody or trust assumptions.
+A self-hosted, high-performance orderbook and matching infrastructure that enables protocols to combine off-chain speed with on-chain security—without custody or trust assumptions
 
 ## Overview
 
@@ -27,18 +27,21 @@ Anvil follows a hybrid architecture:
 ### Components
 
 - **Gateway** (`anvil-gateway`): Order intake, authentication, and validation
+
   - High-performance HTTP server using actix-web
   - Ed25519/ECDSA signature verification
   - Rate limiting and admission control
   - gRPC client for matching engine communication
 
 - **Matching Engine** (`anvil-matching`): High-performance limit order book matching
+
   - Deterministic price-time priority matching
   - Concurrent order book using DashMap
   - gRPC server for order processing
   - gRPC client for settlement communication
 
 - **Settlement Core** (`anvil-settlement`): Trade validation and blockchain transaction submission
+
   - Trade validation and protocol rule enforcement
   - Chain-specific transaction building (Solana/Ethereum)
   - Transaction submission and confirmation tracking
@@ -107,10 +110,11 @@ anvil/
 
 - Rust 1.92.0 or later
 - protoc (Protocol Buffers compiler)
+
   ```bash
   # macOS
   brew install protobuf
-  
+
   # Linux
   sudo apt-get install protobuf-compiler
   ```
@@ -138,16 +142,19 @@ cargo build --release -p anvil-settlement
 Services can be configured via environment variables or configuration files:
 
 **Gateway:**
+
 - `GATEWAY_BIND_ADDR`: HTTP server bind address (default: `0.0.0.0:8080`)
 - `GATEWAY_WORKERS`: Number of worker threads (default: CPU count)
 - `GATEWAY_MATCHING_ENGINES`: JSON mapping of market to matching engine endpoint
 
 **Matching:**
+
 - `MATCHING_ADDR`: gRPC server bind address (default: `0.0.0.0:50051`)
 - `MARKET`: Market identifier (default: `BTC-USDT`)
 - `MATCHING_SETTLEMENT_ENDPOINT`: Settlement service endpoint
 
 **Settlement:**
+
 - `SETTLEMENT_ADDR`: gRPC server bind address (default: `0.0.0.0:50052`)
 - `SETTLEMENT_RPC_ENDPOINTS`: JSON mapping of chain to RPC endpoint
 
@@ -175,7 +182,7 @@ use anvil_sdk::{Client, SignatureAlgorithm, PlaceOrderRequest, Side, OrderType};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create client
     let client = Client::new("http://localhost:8080");
-    
+
     // Create order request
     let request = PlaceOrderRequest {
         market: "BTC-USDT".to_string(),
@@ -186,19 +193,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client_order_id: Some("my_order_1".to_string()),
         signature: "".to_string(), // Will be signed automatically
     };
-    
+
     // Sign and place order
     let private_key = b"your_private_key_here";
     let response = client
         .place_order_signed(request, private_key, SignatureAlgorithm::Ed25519)
         .await?;
-    
+
     println!("Order placed: {}", response.order_id);
-    
+
     // Query order status
     let order = client.get_order(&response.order_id).await?;
     println!("Order status: {:?}", order.status);
-    
+
     Ok(())
 }
 ```
