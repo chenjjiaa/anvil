@@ -12,6 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-fn main() {
-	println!("Hello, world!");
-}
+//! Anvil SDK - Client library for order submission
+//!
+//! This crate provides typed client interfaces for order submission,
+//! shared request/response structures, and signing utilities.
+//!
+//! The SDK is designed to be lightweight and embeddable:
+//! - No background threads
+//! - No runtime initialization
+//! - No environment or configuration loading
+
+pub mod client;
+pub mod signing;
+pub mod types;
+
+pub use client::Client;
+pub use types::*;
