@@ -19,18 +19,26 @@
 
 mod admission;
 mod auth;
+mod config;
+mod grpc_client;
+mod handlers;
+mod middleware;
 mod router;
 mod server;
 
 use server::GatewayServer;
 use std::net::SocketAddr;
-use tokio::signal;
 
-#[tokio::main]
+#[actix_rt::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	// Initialize tracing
+	tracing_subscriber::fmt()
+		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+		.init();
+
 	let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-	println!("Starting Anvil Gateway on {}", addr);
+	tracing::info!("Starting Anvil Gateway on {}", addr);
 
 	let server = GatewayServer::new().await?;
 	server.serve(addr).await?;

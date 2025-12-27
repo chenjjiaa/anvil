@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Anvil SDK - Client library for order submission
+//! Anvil Settlement Core
 //!
-//! This crate provides typed client interfaces for order submission,
-//! shared request/response structures, and signing utilities.
-//!
-//! The SDK is designed to be lightweight and embeddable:
-//! - No background threads
-//! - No runtime initialization
-//! - No environment or configuration loading
+//! This crate provides trade validation, transaction construction,
+//! and blockchain submission functionality.
 
-pub mod client;
-pub mod signing;
-pub mod types;
+pub mod chains;
+pub mod config;
+pub mod server;
+pub mod submitter;
+pub mod transaction;
+pub mod validator;
 
-pub use client::{Client, SyncClient};
-pub use signing::{SignatureAlgorithm, sign_order_request, verify_order_signature};
-pub use types::*;
+pub use anvil_sdk::types::Trade;
+pub use submitter::{SettlementSubmitter, SubmissionResult, SubmissionStatus};
+pub use transaction::Chain;
+pub use transaction::{SettlementTransaction, TransactionBuilder, TransactionError};
+pub use validator::{ValidationError, validate_trade, validate_trades};

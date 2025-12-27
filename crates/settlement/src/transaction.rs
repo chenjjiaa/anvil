@@ -14,6 +14,7 @@
 
 use anvil_sdk::types::Trade;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 use thiserror::Error;
 
 /// Error types for transaction construction
@@ -79,14 +80,11 @@ impl TransactionBuilder {
 		&self,
 		trades: Vec<Trade>,
 	) -> Result<SettlementTransaction, TransactionError> {
-		// TODO: Implement Solana-specific transaction construction
-		// This would use Solana SDK to build instructions and transactions
-		Ok(SettlementTransaction {
-			chain: Chain::Solana,
-			raw_transaction: vec![], // Placeholder
-			tx_hash: format!("solana_tx_{}", uuid::Uuid::new_v4()),
-			trades,
-		})
+		// Delegate to chain-specific module
+		// Note: This is a sync wrapper around async function
+		// In production, TransactionBuilder should be async or use a runtime
+		tokio::runtime::Handle::current()
+			.block_on(crate::chains::solana::build_solana_transaction(trades))
 	}
 
 	/// Build an Ethereum transaction
@@ -94,13 +92,8 @@ impl TransactionBuilder {
 		&self,
 		trades: Vec<Trade>,
 	) -> Result<SettlementTransaction, TransactionError> {
-		// TODO: Implement Ethereum-specific transaction construction
-		// This would use ethers-rs or similar to build contract calls
-		Ok(SettlementTransaction {
-			chain: Chain::Ethereum,
-			raw_transaction: vec![], // Placeholder
-			tx_hash: format!("ethereum_tx_{}", uuid::Uuid::new_v4()),
-			trades,
-		})
+		// Delegate to chain-specific module
+		tokio::runtime::Handle::current()
+			.block_on(crate::chains::ethereum::build_ethereum_transaction(trades))
 	}
 }

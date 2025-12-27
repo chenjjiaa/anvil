@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Anvil SDK - Client library for order submission
-//!
-//! This crate provides typed client interfaces for order submission,
-//! shared request/response structures, and signing utilities.
-//!
-//! The SDK is designed to be lightweight and embeddable:
-//! - No background threads
-//! - No runtime initialization
-//! - No environment or configuration loading
+//! Chain-specific transaction builders
 
-pub mod client;
-pub mod signing;
-pub mod types;
+pub mod ethereum;
+pub mod solana;
 
-pub use client::{Client, SyncClient};
-pub use signing::{SignatureAlgorithm, sign_order_request, verify_order_signature};
-pub use types::*;
+use crate::transaction::{Chain, SettlementTransaction, TransactionError};
+use anvil_sdk::types::Trade;
+
+/// Build a settlement transaction for a specific chain
+pub async fn build_transaction(
+	chain: Chain,
+	trades: Vec<Trade>,
+) -> Result<SettlementTransaction, TransactionError> {
+	match chain {
+		Chain::Solana => solana::build_solana_transaction(trades).await,
+		Chain::Ethereum => ethereum::build_ethereum_transaction(trades).await,
+	}
+}

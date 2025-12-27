@@ -1,0 +1,131 @@
+/*
+ * Copyright 2025 chenjjiaa
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+syntax = "proto3";
+
+package anvil.matching;
+
+// Matching engine service definition
+service MatchingService {
+  // Submit an order for matching
+  rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse);
+  
+  // Query order status
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  
+  // Cancel an order
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  
+  // Stream matched trades (for settlement)
+  rpc StreamMatchedTrades(StreamMatchedTradesRequest) returns (stream MatchedTrade);
+}
+
+// Order submission request
+message SubmitOrderRequest {
+  string order_id = 1;
+  string market = 2;
+  OrderSide side = 3;
+  uint64 price = 4;
+  uint64 size = 5;
+  uint64 remaining_size = 6;
+  uint64 timestamp = 7;
+  string user_id = 8;
+}
+
+// Order submission response
+message SubmitOrderResponse {
+  string order_id = 1;
+  OrderStatus status = 2;
+  repeated Trade trades = 3;
+  bool fully_filled = 4;
+  bool partially_filled = 5;
+}
+
+// Order query request
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+// Order query response
+message GetOrderResponse {
+  Order order = 1;
+}
+
+// Order cancellation request
+message CancelOrderRequest {
+  string order_id = 1;
+  string market = 2;
+  OrderSide side = 3;
+}
+
+// Order cancellation response
+message CancelOrderResponse {
+  bool success = 1;
+  string order_id = 2;
+}
+
+// Stream matched trades request
+message StreamMatchedTradesRequest {
+  string market = 1;
+}
+
+// Matched trade message
+message MatchedTrade {
+  Trade trade = 1;
+  string market = 2;
+}
+
+// Trade definition
+message Trade {
+  string trade_id = 1;
+  string market = 2;
+  uint64 price = 3;
+  uint64 size = 4;
+  OrderSide side = 5;
+  uint64 timestamp = 6;
+  string maker_order_id = 7;
+  string taker_order_id = 8;
+}
+
+// Order definition
+message Order {
+  string order_id = 1;
+  string market = 2;
+  OrderSide side = 3;
+  uint64 price = 4;
+  uint64 size = 5;
+  uint64 filled_size = 6;
+  uint64 remaining_size = 7;
+  OrderStatus status = 8;
+  uint64 created_at = 9;
+}
+
+// Order side enum
+enum OrderSide {
+  BUY = 0;
+  SELL = 1;
+}
+
+// Order status enum
+enum OrderStatus {
+  PENDING = 0;
+  ACCEPTED = 1;
+  PARTIALLY_FILLED = 2;
+  FILLED = 3;
+  CANCELLED = 4;
+  REJECTED = 5;
+}
+

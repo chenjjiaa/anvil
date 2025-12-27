@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Anvil SDK - Client library for order submission
-//!
-//! This crate provides typed client interfaces for order submission,
-//! shared request/response structures, and signing utilities.
-//!
-//! The SDK is designed to be lightweight and embeddable:
-//! - No background threads
-//! - No runtime initialization
-//! - No environment or configuration loading
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+	tonic_build::configure()
+		.build_server(true)
+		.build_client(true)
+		.compile_protos(&["proto/matching.proto"], &["proto/"])?;
 
-pub mod client;
-pub mod signing;
-pub mod types;
+	// Also compile settlement proto for client use
+	// In production, this would come from a shared proto package
+	let settlement_proto = "../settlement/proto/settlement.proto";
+	if std::path::Path::new(settlement_proto).exists() {
+		tonic_build::configure()
+			.build_server(false)
+			.build_client(true)
+			.compile_protos(&[settlement_proto], &["../settlement/proto/"])?;
+	}
 
-pub use client::{Client, SyncClient};
-pub use signing::{SignatureAlgorithm, sign_order_request, verify_order_signature};
-pub use types::*;
+	Ok(())
+}

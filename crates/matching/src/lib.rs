@@ -18,8 +18,11 @@
 //! for limit order books. It maintains in-memory order books, applies
 //! price-time priority, and produces replayable matching results.
 
+pub mod client;
+pub mod config;
 pub mod matcher;
 pub mod orderbook;
+pub mod server;
 pub mod types;
 
 pub use matcher::Matcher;

@@ -112,14 +112,49 @@ impl SettlementSubmitter {
 			))
 		})?;
 
-		// TODO: Actually submit transaction via chain-specific RPC
-		// For Solana: use solana-client
-		// For Ethereum: use ethers-rs
+		// Submit transaction via chain-specific RPC
+		match chain {
+			Chain::Solana => self.submit_solana_transaction(transaction).await,
+			Chain::Ethereum => self.submit_ethereum_transaction(transaction).await,
+		}
+	}
 
-		// Placeholder: return pending status
+	/// Submit Solana transaction
+	async fn submit_solana_transaction(
+		&self,
+		transaction: SettlementTransaction,
+	) -> Result<SubmissionResult, SubmissionError> {
+		// TODO: Use solana-client to submit transaction
+		// Example:
+		// let rpc_client = RpcClient::new(endpoint);
+		// let signature = rpc_client.send_transaction(&transaction.raw_transaction).await?;
+
+		// Placeholder implementation
+		tracing::info!("Submitting Solana transaction: {}", transaction.tx_hash);
 		Ok(SubmissionResult {
 			tx_hash: transaction.tx_hash,
-			status: SubmissionStatus::Pending,
+			status: SubmissionStatus::Submitted,
+			confirmations: 0,
+			error: None,
+		})
+	}
+
+	/// Submit Ethereum transaction
+	async fn submit_ethereum_transaction(
+		&self,
+		transaction: SettlementTransaction,
+	) -> Result<SubmissionResult, SubmissionError> {
+		// TODO: Use ethers-rs to submit transaction
+		// Example:
+		// let provider = Provider::new(Http::new(endpoint));
+		// let pending_tx = provider.send_transaction(transaction.raw_transaction, None).await?;
+		// let receipt = pending_tx.await?;
+
+		// Placeholder implementation
+		tracing::info!("Submitting Ethereum transaction: {}", transaction.tx_hash);
+		Ok(SubmissionResult {
+			tx_hash: transaction.tx_hash,
+			status: SubmissionStatus::Submitted,
 			confirmations: 0,
 			error: None,
 		})
@@ -128,12 +163,43 @@ impl SettlementSubmitter {
 	/// Check the status of a submitted transaction
 	pub async fn check_transaction_status(
 		&self,
-		_chain: Chain,
+		chain: Chain,
 		tx_hash: &str,
 	) -> Result<SubmissionResult, SubmissionError> {
-		// TODO: Query blockchain for transaction status
-		// This would use chain-specific RPC calls to check confirmation status
+		match chain {
+			Chain::Solana => self.check_solana_transaction_status(tx_hash).await,
+			Chain::Ethereum => self.check_ethereum_transaction_status(tx_hash).await,
+		}
+	}
 
+	/// Check Solana transaction status
+	async fn check_solana_transaction_status(
+		&self,
+		tx_hash: &str,
+	) -> Result<SubmissionResult, SubmissionError> {
+		// TODO: Query Solana RPC for transaction status
+		// let rpc_client = RpcClient::new(endpoint);
+		// let status = rpc_client.get_signature_status(tx_hash).await?;
+
+		// Placeholder implementation
+		Ok(SubmissionResult {
+			tx_hash: tx_hash.to_string(),
+			status: SubmissionStatus::Pending,
+			confirmations: 0,
+			error: None,
+		})
+	}
+
+	/// Check Ethereum transaction status
+	async fn check_ethereum_transaction_status(
+		&self,
+		tx_hash: &str,
+	) -> Result<SubmissionResult, SubmissionError> {
+		// TODO: Query Ethereum RPC for transaction receipt
+		// let provider = Provider::new(Http::new(endpoint));
+		// let receipt = provider.get_transaction_receipt(tx_hash).await?;
+
+		// Placeholder implementation
 		Ok(SubmissionResult {
 			tx_hash: tx_hash.to_string(),
 			status: SubmissionStatus::Pending,

@@ -14,11 +14,13 @@
 
 use crate::types::Order;
 use anvil_sdk::types::Side;
-use std::collections::BTreeMap;
+use dashmap::DashMap;
+use std::sync::Arc;
 
 /// Price level in the order book
 #[derive(Debug, Clone)]
-pub(crate) struct PriceLevel {
+pub struct PriceLevel {
+	#[allow(dead_code)]
 	price: u64,
 	orders: Vec<Order>,
 	total_size: u64,
@@ -79,16 +81,16 @@ impl PriceLevel {
 
 /// Limit order book maintaining buy and sell sides
 ///
-/// The order book uses BTreeMap for price-time priority:
+/// The order book uses DashMap for concurrent access and BTreeMap for ordering:
 /// - Buy side: highest price first (descending)
 /// - Sell side: lowest price first (ascending)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrderBook {
 	market: String,
-	/// Buy side: price -> PriceLevel (sorted descending by price)
-	bids: BTreeMap<u64, PriceLevel>,
-	/// Sell side: price -> PriceLevel (sorted ascending by price)
-	asks: BTreeMap<u64, PriceLevel>,
+	/// Buy side: price -> PriceLevel (concurrent map, sorted by price on access)
+	bids: Arc<DashMap<u64, PriceLevel>>,
+	/// Sell side: price -> PriceLevel (concurrent map, sorted by price on access)
+	asks: Arc<DashMap<u64, PriceLevel>>,
 }
 
 impl OrderBook {
@@ -96,8 +98,8 @@ impl OrderBook {
 	pub fn new(market: String) -> Self {
 		Self {
 			market,
-			bids: BTreeMap::new(),
-			asks: BTreeMap::new(),
+			bids: Arc::new(DashMap::new()),
+			asks: Arc::new(DashMap::new()),
 		}
 	}
 
@@ -107,10 +109,10 @@ impl OrderBook {
 	}
 
 	/// Add an order to the book
-	pub fn add_order(&mut self, order: Order) {
+	pub fn add_order(&self, order: Order) {
 		let side_map = match order.side {
-			Side::Buy => &mut self.bids,
-			Side::Sell => &mut self.asks,
+			Side::Buy => &self.bids,
+			Side::Sell => &self.asks,
 		};
 
 		side_map
@@ -120,21 +122,23 @@ impl OrderBook {
 	}
 
 	/// Remove an order from the book
-	pub fn remove_order(&mut self, side: Side, order_id: &str) -> Option<Order> {
+	pub fn remove_order(&self, side: Side, order_id: &str) -> Option<Order> {
 		let side_map = match side {
-			Side::Buy => &mut self.bids,
-			Side::Sell => &mut self.asks,
+			Side::Buy => &self.bids,
+			Side::Sell => &self.asks,
 		};
 
 		// Find and remove the order
 		let mut result = None;
 		let mut price_to_remove = None;
 
-		for (price, level) in side_map.iter_mut() {
+		for mut entry in side_map.iter_mut() {
+			let price = *entry.key();
+			let level = entry.value_mut();
 			if let Some(order) = level.remove_order(order_id) {
 				result = Some(order);
 				if level.orders.is_empty() {
-					price_to_remove = Some(*price);
+					price_to_remove = Some(price);
 				}
 				break;
 			}
@@ -150,16 +154,18 @@ impl OrderBook {
 
 	/// Get the best bid price
 	pub fn best_bid(&self) -> Option<u64> {
-		self.bids.keys().next_back().copied()
+		// DashMap doesn't maintain order, so we need to iterate
+		self.bids.iter().map(|entry| *entry.key()).max()
 	}
 
 	/// Get the best ask price
 	pub fn best_ask(&self) -> Option<u64> {
-		self.asks.keys().next().copied()
+		// DashMap doesn't maintain order, so we need to iterate
+		self.asks.iter().map(|entry| *entry.key()).min()
 	}
 
 	/// Get the best bid price level (for matching)
-	pub fn best_bid_level(&mut self) -> Option<&mut PriceLevel> {
+	pub fn best_bid_level(&self) -> Option<dashmap::mapref::one::RefMut<'_, u64, PriceLevel>> {
 		if let Some(price) = self.best_bid() {
 			self.bids.get_mut(&price)
 		} else {
@@ -168,7 +174,7 @@ impl OrderBook {
 	}
 
 	/// Get the best ask price level (for matching)
-	pub fn best_ask_level(&mut self) -> Option<&mut PriceLevel> {
+	pub fn best_ask_level(&self) -> Option<dashmap::mapref::one::RefMut<'_, u64, PriceLevel>> {
 		if let Some(price) = self.best_ask() {
 			self.asks.get_mut(&price)
 		} else {
@@ -177,11 +183,11 @@ impl OrderBook {
 	}
 
 	/// Get all orders at a price level (for matching)
-	pub fn get_orders_at_price(&self, side: Side, price: u64) -> Option<&Vec<Order>> {
+	pub fn get_orders_at_price(&self, side: Side, price: u64) -> Option<Vec<Order>> {
 		let side_map = match side {
 			Side::Buy => &self.bids,
 			Side::Sell => &self.asks,
 		};
-		side_map.get(&price).map(|level| &level.orders)
+		side_map.get(&price).map(|level| level.orders.clone())
 	}
 }

@@ -17,28 +17,49 @@
 //! This service validates matched trades, constructs chain-specific
 //! transactions, and submits them to the blockchain for final settlement.
 
-mod submitter;
-mod transaction;
-mod validator;
-
-use submitter::SettlementSubmitter;
+use anvil_settlement::submitter::SettlementSubmitter;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::signal;
+use tokio::sync::RwLock;
+use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	println!("Starting Anvil Settlement Core");
+	// Initialize tracing
+	tracing_subscriber::fmt()
+		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+		.init();
+
+	// Get configuration
+	let addr: SocketAddr = std::env::var("SETTLEMENT_ADDR")
+		.ok()
+		.and_then(|s| s.parse().ok())
+		.unwrap_or_else(|| "0.0.0.0:50052".parse().unwrap());
+
+	tracing::info!("Starting Anvil Settlement Core");
+	tracing::info!("Listening on: {}", addr);
 
 	// Initialize settlement submitter
-	let submitter = SettlementSubmitter::new().await?;
+	let submitter = Arc::new(RwLock::new(SettlementSubmitter::new().await?));
 
-	// TODO: Set up channel to receive matched trades from matching engine
-	// TODO: Process trades, validate, construct transactions, and submit
+	// Create gRPC server
+	let settlement_service = anvil_settlement::server::create_server(submitter.clone());
 
-	println!("Settlement core ready");
+	// Start gRPC server
+	let server = Server::builder()
+		.add_service(settlement_service)
+		.serve(addr);
 
 	// Wait for shutdown signal
-	signal::ctrl_c().await?;
-	println!("Shutting down...");
+	tokio::select! {
+		_ = server => {
+			tracing::info!("gRPC server stopped");
+		}
+		_ = signal::ctrl_c() => {
+			tracing::info!("Shutting down...");
+		}
+	}
 
 	Ok(())
 }

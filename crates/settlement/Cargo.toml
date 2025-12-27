@@ -5,11 +5,27 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "anvil_settlement"
+path = "src/lib.rs"
+
+[build-dependencies]
+tonic-build = { version = "0.12", features = ["prost"] }
+
 [dependencies]
 anvil-sdk = { path = "../sdk" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+config = { workspace = true }
+# Blockchain SDKs (optional, can be enabled via features)
+# solana-sdk = { version = "1", optional = true }
+# ethers = { version = "2", optional = true, default-features = false, features = ["rustls"] }
 

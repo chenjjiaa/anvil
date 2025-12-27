@@ -12,48 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::admission::{AdmissionError, validate_and_admit};
-use crate::auth::{AuthError, authenticate_order, extract_user_id};
-use crate::router::{Router, RouterError};
-use anvil_sdk::types::{OrderStatus, PlaceOrderRequest, PlaceOrderResponse};
-use axum::{
-	Json, Router as AxumRouter, extract::State, http::StatusCode, response::IntoResponse,
-	routing::post,
-};
+use crate::handlers;
+use crate::middleware;
+use actix_web::{App, HttpServer, web};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use thiserror::Error;
-
-/// Error types for gateway operations
-#[derive(Debug, Error)]
-pub enum GatewayError {
-	#[error("Authentication error: {0}")]
-	Auth(#[from] AuthError),
-	#[error("Admission error: {0}")]
-	Admission(#[from] AdmissionError),
-	#[error("Routing error: {0}")]
-	Routing(#[from] RouterError),
-	#[error("Internal error: {0}")]
-	Internal(String),
-}
-
-impl IntoResponse for GatewayError {
-	fn into_response(self) -> axum::response::Response {
-		let (status, error_message) = match self {
-			GatewayError::Auth(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
-			GatewayError::Admission(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-			GatewayError::Routing(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
-			GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-		};
-
-		(status, Json(serde_json::json!({ "error": error_message }))).into_response()
-	}
-}
 
 /// Gateway server state
 #[derive(Clone)]
-struct GatewayState {
-	router: Arc<Router>,
+pub struct GatewayState {
+	pub router: Arc<crate::router::Router>,
 }
 
 /// Gateway server
@@ -64,50 +32,49 @@ pub struct GatewayServer {
 impl GatewayServer {
 	/// Create a new gateway server
 	pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-		let router = Arc::new(Router::new());
+		let router = Arc::new(crate::router::Router::new());
 		Ok(Self {
 			state: GatewayState { router },
 		})
 	}
 
-	/// Start the HTTP server
+	/// Start the HTTP server with actix-web
 	pub async fn serve(&self, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-		let app = AxumRouter::new()
-			.route("/api/v1/orders", post(place_order_handler))
-			.with_state(self.state.clone());
+		let state = self.state.clone();
 
-		let listener = tokio::net::TcpListener::bind(addr).await?;
-		println!("Gateway listening on {}", addr);
+		// Get number of workers from environment or use CPU count
+		let workers = std::env::var("GATEWAY_WORKERS")
+			.ok()
+			.and_then(|w| w.parse().ok())
+			.unwrap_or_else(num_cpus::get);
 
-		axum::serve(listener, app).await?;
+		tracing::info!(
+			"Starting Anvil Gateway on {} with {} workers",
+			addr,
+			workers
+		);
+
+		HttpServer::new(move || {
+			App::new()
+				.app_data(web::Data::new(state.clone()))
+				.wrap(middleware::CorsMiddleware)
+				.wrap(middleware::LoggingMiddleware)
+				.service(
+					web::scope("/api/v1")
+						.route("/orders", web::post().to(handlers::place_order))
+						.route("/orders/{order_id}", web::get().to(handlers::get_order))
+						.route(
+							"/orders/{order_id}",
+							web::delete().to(handlers::cancel_order),
+						),
+				)
+				.route("/health", web::get().to(handlers::health))
+		})
+		.workers(workers)
+		.bind(addr)?
+		.run()
+		.await?;
+
 		Ok(())
 	}
-}
-
-/// Handle order placement request
-async fn place_order_handler(
-	State(state): State<GatewayState>,
-	Json(request): Json<PlaceOrderRequest>,
-) -> Result<Json<PlaceOrderResponse>, GatewayError> {
-	// Extract user ID (placeholder - in production, extract from auth token)
-	let user_id = extract_user_id(&request);
-
-	// Authenticate the order
-	// TODO: Get public key from request or auth token
-	let public_key = b"placeholder_public_key";
-	authenticate_order(&request, public_key)?;
-
-	// Validate and admit the order
-	validate_and_admit(&request)?;
-
-	// Route to matching engine
-	let matching_order = state.router.route_order(request.clone(), user_id)?;
-
-	// TODO: Actually send to matching engine and wait for response
-	// For now, return a placeholder response
-	Ok(Json(PlaceOrderResponse {
-		order_id: matching_order.order_id,
-		status: OrderStatus::Accepted,
-		client_order_id: None,
-	}))
 }

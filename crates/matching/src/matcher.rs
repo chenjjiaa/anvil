@@ -15,30 +15,33 @@
 use crate::orderbook::OrderBook;
 use crate::types::{MatchResult, MatchingError, Order};
 use anvil_sdk::types::{Side, Trade};
-use std::collections::HashMap;
+use dashmap::DashMap;
 
 /// Matching engine that applies deterministic price-time priority
 ///
 /// The matcher maintains order books per market and applies
 /// deterministic matching rules to produce replayable results.
+/// Uses DashMap for concurrent access without locks.
 pub struct Matcher {
-	/// Market -> OrderBook mapping
-	order_books: HashMap<String, OrderBook>,
+	/// Market -> OrderBook mapping (concurrent)
+	order_books: DashMap<String, OrderBook>,
 }
 
 impl Matcher {
 	/// Create a new matching engine
 	pub fn new() -> Self {
 		Self {
-			order_books: HashMap::new(),
+			order_books: DashMap::new(),
 		}
 	}
 
 	/// Get or create an order book for a market
-	fn get_or_create_orderbook(&mut self, market: &str) -> &mut OrderBook {
+	#[allow(dead_code)]
+	fn get_or_create_orderbook(&self, market: &str) -> OrderBook {
 		self.order_books
 			.entry(market.to_string())
 			.or_insert_with(|| OrderBook::new(market.to_string()))
+			.clone()
 	}
 
 	/// Process an incoming order and match it against the book
@@ -48,11 +51,13 @@ impl Matcher {
 	/// - Time priority: earlier orders at the same price match first
 	///
 	/// Returns a MatchResult containing all trades generated.
-	pub fn match_order(&mut self, mut order: Order) -> Result<MatchResult, MatchingError> {
+	pub fn match_order(&self, mut order: Order) -> Result<MatchResult, MatchingError> {
+		// Get or create orderbook
 		let orderbook = self
 			.order_books
-			.get_mut(&order.market)
-			.ok_or_else(|| MatchingError::MarketNotFound(order.market.clone()))?;
+			.entry(order.market.clone())
+			.or_insert_with(|| OrderBook::new(order.market.clone()))
+			.clone();
 
 		let mut trades = Vec::new();
 		let mut remaining_size = order.remaining_size;
@@ -60,8 +65,8 @@ impl Matcher {
 		// Match against the opposite side
 		while remaining_size > 0 {
 			let matched = match order.side {
-				Side::Buy => Self::match_buy_order(orderbook, &order, remaining_size),
-				Side::Sell => Self::match_sell_order(orderbook, &order, remaining_size),
+				Side::Buy => Self::match_buy_order(&orderbook, &order, remaining_size),
+				Side::Sell => Self::match_sell_order(&orderbook, &order, remaining_size),
 			};
 
 			match matched {
@@ -92,11 +97,7 @@ impl Matcher {
 	}
 
 	/// Match a buy order against the ask side
-	fn match_buy_order(
-		orderbook: &mut OrderBook,
-		order: &Order,
-		remaining_size: u64,
-	) -> Option<Trade> {
+	fn match_buy_order(orderbook: &OrderBook, order: &Order, remaining_size: u64) -> Option<Trade> {
 		let best_ask = orderbook.best_ask()?;
 
 		// Check if buy order price is acceptable
@@ -105,7 +106,7 @@ impl Matcher {
 		}
 
 		// Get the best ask level
-		let ask_level = orderbook.best_ask_level()?;
+		let mut ask_level = orderbook.best_ask_level()?;
 		let maker_order = ask_level.get_first_order()?.clone();
 		let match_price = best_ask;
 		let match_size = remaining_size.min(maker_order.remaining_size);
@@ -116,6 +117,7 @@ impl Matcher {
 			ask_level.remove_first_order();
 			// Also remove from orderbook if level is now empty
 			if ask_level.is_empty() {
+				drop(ask_level); // Release lock
 				orderbook.remove_order(Side::Sell, &maker_order.order_id);
 			}
 		} else {
@@ -144,7 +146,7 @@ impl Matcher {
 
 	/// Match a sell order against the bid side
 	fn match_sell_order(
-		orderbook: &mut OrderBook,
+		orderbook: &OrderBook,
 		order: &Order,
 		remaining_size: u64,
 	) -> Option<Trade> {
@@ -156,7 +158,7 @@ impl Matcher {
 		}
 
 		// Get the best bid level
-		let bid_level = orderbook.best_bid_level()?;
+		let mut bid_level = orderbook.best_bid_level()?;
 		let maker_order = bid_level.get_first_order()?.clone();
 		let match_price = best_bid;
 		let match_size = remaining_size.min(maker_order.remaining_size);
@@ -167,6 +169,7 @@ impl Matcher {
 			bid_level.remove_first_order();
 			// Also remove from orderbook if level is now empty
 			if bid_level.is_empty() {
+				drop(bid_level); // Release lock
 				orderbook.remove_order(Side::Buy, &maker_order.order_id);
 			}
 		} else {
@@ -195,14 +198,14 @@ impl Matcher {
 
 	/// Cancel an order from the book
 	pub fn cancel_order(
-		&mut self,
+		&self,
 		market: &str,
 		side: Side,
 		order_id: &str,
 	) -> Result<Option<Order>, MatchingError> {
 		let orderbook = self
 			.order_books
-			.get_mut(market)
+			.get(market)
 			.ok_or_else(|| MatchingError::MarketNotFound(market.to_string()))?;
 
 		Ok(orderbook.remove_order(side, order_id))
@@ -212,5 +215,88 @@ impl Matcher {
 impl Default for Matcher {
 	fn default() -> Self {
 		Self::new()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use anvil_sdk::types::Side;
+
+	#[test]
+	fn test_match_buy_order() {
+		let matcher = Matcher::new();
+
+		// Add a sell order
+		let sell_order = Order {
+			order_id: "sell_1".to_string(),
+			market: "BTC-USDT".to_string(),
+			side: Side::Sell,
+			price: 50000,
+			size: 1,
+			remaining_size: 1,
+			timestamp: 1000,
+			user_id: "user1".to_string(),
+		};
+
+		let _ = matcher.match_order(sell_order);
+
+		// Add a buy order that matches
+		let buy_order = Order {
+			order_id: "buy_1".to_string(),
+			market: "BTC-USDT".to_string(),
+			side: Side::Buy,
+			price: 50000,
+			size: 1,
+			remaining_size: 1,
+			timestamp: 2000,
+			user_id: "user2".to_string(),
+		};
+
+		let result = matcher.match_order(buy_order).unwrap();
+		assert!(result.fully_filled);
+		assert_eq!(result.trades.len(), 1);
+		assert_eq!(result.trades[0].price, 50000);
+		assert_eq!(result.trades[0].size, 1);
+	}
+
+	#[test]
+	fn test_price_time_priority() {
+		let matcher = Matcher::new();
+
+		// Add multiple sell orders at same price
+		for i in 0..3 {
+			let sell_order = Order {
+				order_id: format!("sell_{}", i),
+				market: "BTC-USDT".to_string(),
+				side: Side::Sell,
+				price: 50000,
+				size: 1,
+				remaining_size: 1,
+				timestamp: 1000 + i,
+				user_id: format!("user_{}", i),
+			};
+			let _ = matcher.match_order(sell_order);
+		}
+
+		// Add a buy order that matches all
+		let buy_order = Order {
+			order_id: "buy_1".to_string(),
+			market: "BTC-USDT".to_string(),
+			side: Side::Buy,
+			price: 50000,
+			size: 3,
+			remaining_size: 3,
+			timestamp: 2000,
+			user_id: "user_buyer".to_string(),
+		};
+
+		let result = matcher.match_order(buy_order).unwrap();
+		assert!(result.fully_filled);
+		assert_eq!(result.trades.len(), 3);
+		// Should match in time order (sell_0, sell_1, sell_2)
+		assert_eq!(result.trades[0].maker_order_id, "sell_0");
+		assert_eq!(result.trades[1].maker_order_id, "sell_1");
+		assert_eq!(result.trades[2].maker_order_id, "sell_2");
 	}
 }

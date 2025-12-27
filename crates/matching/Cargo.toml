@@ -13,10 +13,23 @@ path = "src/lib.rs"
 name = "anvil-matching"
 path = "src/main.rs"
 
+[build-dependencies]
+tonic-build = { version = "0.12", features = ["prost"] }
+
 [dependencies]
 anvil-sdk = { path = "../sdk" }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-stream = "0.1"
+config = { workspace = true }
+dashmap = "6"
+crossbeam = "0.8"
+anvil-settlement = { path = "../settlement" }
 

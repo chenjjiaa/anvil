@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::grpc_client::{GrpcClientError, MatchingGrpcClient};
 use anvil_matching::types::Order as MatchingOrder;
-use anvil_sdk::types::{PlaceOrderRequest, Side};
+use anvil_sdk::types::PlaceOrderRequest;
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 /// Error types for routing operations
 #[derive(Debug, Error)]
@@ -24,16 +27,18 @@ pub enum RouterError {
 	MatchingEngineNotFound(String),
 	#[error("Routing error: {0}")]
 	RoutingError(String),
+	#[error("gRPC client error: {0}")]
+	GrpcClient(#[from] GrpcClientError),
 }
 
 /// Router that forwards orders to the appropriate matching engine
 ///
-/// In production, this would connect to matching engines via gRPC,
-/// message queues, or other inter-service communication mechanisms.
+/// Uses gRPC to communicate with matching engines.
 pub struct Router {
 	/// Market -> Matching engine endpoint mapping
-	/// In a real implementation, this would be a connection pool or client
 	matching_engines: HashMap<String, String>,
+	/// Market -> gRPC client mapping (with mutex for async access)
+	clients: Arc<Mutex<HashMap<String, MatchingGrpcClient>>>,
 }
 
 impl Router {
@@ -41,26 +46,45 @@ impl Router {
 	pub fn new() -> Self {
 		let mut engines = HashMap::new();
 		// TODO: Load from configuration
-		engines.insert("BTC-USDT".to_string(), "http://localhost:8081".to_string());
+		engines.insert("BTC-USDT".to_string(), "http://localhost:50051".to_string());
 		Self {
 			matching_engines: engines,
+			clients: Arc::new(Mutex::new(HashMap::new())),
+		}
+	}
+
+	/// Get or create gRPC client for a market
+	async fn get_client(&self, market: &str) -> Result<MatchingGrpcClient, RouterError> {
+		let endpoint = self
+			.matching_engines
+			.get(market)
+			.ok_or_else(|| RouterError::MatchingEngineNotFound(market.to_string()))?;
+
+		let mut clients = self.clients.lock().await;
+
+		if let Some(client) = clients.get(market) {
+			// Clone the client (tonic clients are cheap to clone)
+			Ok(client.clone())
+		} else {
+			// Create new client
+			let client = MatchingGrpcClient::new(endpoint).await.map_err(|e| {
+				RouterError::RoutingError(format!("Failed to create client: {}", e))
+			})?;
+			let client_clone = client.clone();
+			clients.insert(market.to_string(), client);
+			Ok(client_clone)
 		}
 	}
 
 	/// Route an order to the appropriate matching engine
 	///
 	/// This converts the gateway's PlaceOrderRequest into the matching
-	/// engine's internal Order format and forwards it.
-	pub fn route_order(
+	/// engine's internal Order format and forwards it via gRPC.
+	pub async fn route_order(
 		&self,
 		request: PlaceOrderRequest,
 		user_id: String,
 	) -> Result<MatchingOrder, RouterError> {
-		// Check if matching engine exists for this market
-		if !self.matching_engines.contains_key(&request.market) {
-			return Err(RouterError::MatchingEngineNotFound(request.market));
-		}
-
 		// Convert PlaceOrderRequest to MatchingOrder
 		let price = request
 			.price
@@ -80,8 +104,12 @@ impl Router {
 			user_id,
 		};
 
-		// TODO: Actually send to matching engine via gRPC/message queue
-		// For now, just return the converted order
+		// Get gRPC client and submit order
+		let mut client = self.get_client(&request.market).await?;
+		let _response = client
+			.submit_order(order.clone())
+			.await
+			.map_err(|e| RouterError::RoutingError(format!("Failed to submit order: {}", e)))?;
 
 		Ok(order)
 	}
