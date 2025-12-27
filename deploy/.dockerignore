@@ -1,0 +1,8 @@
+target/
+
+.git/
+.gitignore
+
+.vscode/
+.cursor/
+.idea/
