@@ -18,6 +18,7 @@
 //! transactions, and submits them to the blockchain for final settlement.
 
 use anvil_settlement::submitter::SettlementSubmitter;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::signal;
@@ -25,7 +26,7 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
 	// Initialize tracing
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -41,7 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tracing::info!("Listening on: {}", addr);
 
 	// Initialize settlement submitter
-	let submitter = Arc::new(RwLock::new(SettlementSubmitter::new().await?));
+	let submitter = Arc::new(RwLock::new(
+		SettlementSubmitter::new()
+			.await
+			.context("Failed to initialize settlement submitter")?,
+	));
 
 	// Create gRPC server
 	let settlement_service = anvil_settlement::server::create_server(submitter.clone());
@@ -53,7 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Wait for shutdown signal
 	tokio::select! {
-		_ = server => {
+		result = server => {
+			result.context("gRPC server error")?;
 			tracing::info!("gRPC server stopped");
 		}
 		_ = signal::ctrl_c() => {

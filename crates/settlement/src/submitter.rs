@@ -64,7 +64,7 @@ pub struct SettlementSubmitter {
 
 impl SettlementSubmitter {
 	/// Create a new settlement submitter
-	pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+	pub async fn new() -> anyhow::Result<Self> {
 		let mut builders = HashMap::new();
 		builders.insert(Chain::Solana, TransactionBuilder::new(Chain::Solana));
 		builders.insert(Chain::Ethereum, TransactionBuilder::new(Chain::Ethereum));

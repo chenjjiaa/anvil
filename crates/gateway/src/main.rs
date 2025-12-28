@@ -26,11 +26,12 @@ mod middleware;
 mod router;
 mod server;
 
+use anyhow::{Context, Result};
 use server::GatewayServer;
 use std::net::SocketAddr;
 
 #[actix_rt::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
 	// Initialize tracing
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -40,8 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	tracing::info!("Starting Anvil Gateway on {}", addr);
 
-	let server = GatewayServer::new().await?;
-	server.serve(addr).await?;
+	let server = GatewayServer::new()
+		.await
+		.context("Failed to create gateway server")?;
+	server
+		.serve(addr)
+		.await
+		.context("Failed to start gateway server")?;
 
 	Ok(())
 }

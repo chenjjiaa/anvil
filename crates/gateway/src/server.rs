@@ -15,6 +15,7 @@
 use crate::handlers;
 use crate::middleware;
 use actix_web::{App, HttpServer, web};
+use anyhow::Context;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ pub struct GatewayServer {
 
 impl GatewayServer {
 	/// Create a new gateway server
-	pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+	pub async fn new() -> anyhow::Result<Self> {
 		let router = Arc::new(crate::router::Router::new());
 		Ok(Self {
 			state: GatewayState { router },
@@ -39,7 +40,7 @@ impl GatewayServer {
 	}
 
 	/// Start the HTTP server with actix-web
-	pub async fn serve(&self, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+	pub async fn serve(&self, addr: SocketAddr) -> anyhow::Result<()> {
 		let state = self.state.clone();
 
 		// Get number of workers from environment or use CPU count
@@ -71,9 +72,11 @@ impl GatewayServer {
 				.route("/health", web::get().to(handlers::health))
 		})
 		.workers(workers)
-		.bind(addr)?
+		.bind(addr)
+		.context("Failed to bind to address")?
 		.run()
-		.await?;
+		.await
+		.context("HTTP server error")?;
 
 		Ok(())
 	}

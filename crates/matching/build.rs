@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use anyhow::{Context, Result};
+
+fn main() -> Result<()> {
 	tonic_build::configure()
 		.build_server(true)
 		.build_client(true)
-		.compile_protos(&["proto/matching.proto"], &["proto/"])?;
+		.compile_protos(&["proto/matching.proto"], &["proto/"])
+		.context("Failed to compile matching.proto")?;
 
 	// Also compile settlement proto for client use
 	// In production, this would come from a shared proto package
@@ -25,7 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		tonic_build::configure()
 			.build_server(false)
 			.build_client(true)
-			.compile_protos(&[settlement_proto], &["../settlement/proto/"])?;
+			.compile_protos(&[settlement_proto], &["../settlement/proto/"])
+			.context("Failed to compile settlement.proto")?;
 	}
 
 	Ok(())

@@ -21,6 +21,7 @@ debug
 # Common
 **/*.DS_Store
 logs/
+tmp/
 .env
 
 # Python

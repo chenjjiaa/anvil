@@ -18,6 +18,7 @@
 //! from the gateway and produces matched trades for settlement.
 
 use anvil_matching::{Matcher, server};
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::signal;
@@ -25,7 +26,7 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
 	// Initialize tracing
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -54,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Wait for shutdown signal
 	tokio::select! {
-		_ = server => {
+		result = server => {
+			result.context("gRPC server error")?;
 			tracing::info!("gRPC server stopped");
 		}
 		_ = signal::ctrl_c() => {

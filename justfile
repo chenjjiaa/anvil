@@ -22,6 +22,19 @@ alias l := lint
     # This command runs clippy to lint the Rust codebase and treats warnings as errors.
     cargo clippy --locked --all-targets --workspace -- -D warnings
 
+# Regenerate proto files (force rebuild)
+@proto:
+    # Force rebuild proto files by cleaning build artifacts
+    # This is useful when proto files are updated and you want to ensure
+    # the generated Rust code is refreshed
+    cargo clean -p anvil-matching -p anvil-settlement -p anvil-gateway
+    cargo build --workspace
+
+# Verify proto files compile correctly
+@proto-check:
+    # Check if proto files can be compiled without errors
+    cargo build -p anvil-matching -p anvil-settlement -p anvil-gateway
+
 # Calculate lines of code
 @cloc:
     # This command calculates the lines of code in the project, excluding specified directories.
@@ -33,4 +46,4 @@ alias t := test
 # Run tests
 @test:
     # This command runs all tests in the workspace using nextest.
-    cargo nextest --locked run --workspace
+    cargo nextest run --locked --workspace

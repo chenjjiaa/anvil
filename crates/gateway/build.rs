@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use anyhow::{Context, Result};
+
+fn main() -> Result<()> {
 	// Compile matching proto for client use
 	let matching_proto = "../matching/proto/matching.proto";
 	if std::path::Path::new(matching_proto).exists() {
 		tonic_build::configure()
 			.build_server(false)
 			.build_client(true)
-			.compile_protos(&[matching_proto], &["../matching/proto/"])?;
+			.compile_protos(&[matching_proto], &["../matching/proto/"])
+			.context("Failed to compile matching.proto")?;
 	}
 	Ok(())
 }

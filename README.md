@@ -1,8 +1,22 @@
-# Anvil
+<div align="center">
 
-<div align="left">
+<h1 style="font-size: 2.5em; margin: 0.5em 0;">Anvil</h1>
+
+</div>
+
+<div align="center">
 
 [![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v0.1.0--alpha-orange.svg)](Cargo.toml)
+[![Tokio](https://img.shields.io/badge/Tokio-1.x-black.svg)](https://tokio.rs/)
+
+</div>
+
+<div align="center">
+
+[![Ethers.rs](https://img.shields.io/badge/Ethers.rs-627EEA?style=flat&logo=ethereum&logoColor=white)](https://github.com/gakonst/ethers-rs)
+[![Solana](https://img.shields.io/badge/Solana-9945FF?style=flat&logo=solana&logoColor=white)](https://solana.com/)
 
 </div>
 
@@ -241,8 +255,16 @@ cargo test --workspace
 
 ## Documentation
 
+### English
+
 - [Architecture Guide](docs/architecture.md) - Engineering structure and conventions
 - [Design and Implementation](docs/design-and-implementation.md) - System design and usage
+
+### 中文 (Chinese)
+
+- [架构指南](docs/architecture-guide-zh.md) - 详细的系统架构和模块说明
+- [路由与撮合引擎](docs/routing-and-matching-zh.md) - 路由模块和撮合引擎工作原理
+- [快速入门指南](docs/quick-start-zh.md) - 快速开始使用 Anvil
 
 ## License
 

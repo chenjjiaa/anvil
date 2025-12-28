@@ -6,30 +6,31 @@ license.workspace = true
 authors.workspace = true
 
 [build-dependencies]
-tonic-build = { version = "0.12", features = ["prost"] }
+tonic-build = { workspace = true }
+anyhow = { workspace = true }
 
 [dependencies]
 anvil-sdk = { path = "../sdk" }
 anvil-matching = { path = "../matching" }
-serde = { workspace = true, features = ["derive"] }
-serde_json = "1"
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-actix-web = { version = "4", features = ["macros"] }
-actix-rt = "2"
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-num_cpus = "1"
+actix-web = { version = "^4", features = ["macros"] }
+actix-rt = "^2"
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+num_cpus = "^1"
 tonic = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 config = { workspace = true }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
-sha2 = "0.10"
-hex = "0.4"
-governor = "0.6"
-dashmap = "6"
-lazy_static = "1"
-
+ed25519-dalek = { workspace = true }
+k256 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+governor = "^0.6"
+dashmap = { workspace = true }
+lazy_static = "^1"

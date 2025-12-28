@@ -200,8 +200,9 @@ pub struct SyncClient {
 
 impl SyncClient {
 	/// Create a new synchronous client
-	pub fn new(base_url: impl Into<String>) -> Result<Self, Box<dyn std::error::Error>> {
-		let runtime = tokio::runtime::Runtime::new()?;
+	pub fn new(base_url: impl Into<String>) -> anyhow::Result<Self> {
+		let runtime = tokio::runtime::Runtime::new()
+			.map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
 		Ok(Self {
 			client: Client::new(base_url),
 			runtime,
