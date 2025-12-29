@@ -16,7 +16,7 @@
 <div align="center">
 
 [![Ethers.rs](https://img.shields.io/badge/Ethers.rs-627EEA?style=flat&logo=ethereum&logoColor=white)](https://github.com/gakonst/ethers-rs)
-<a href="https://solana.com/"><img src="docs/static/solana-logo.svg" alt="Solana" height="20"></a>
+<a href="https://solana.com/"><img src="docs/static/solana-logo.svg" alt="Solana" height="20" style="background-color: white;"></a>
 
 </div>
 
