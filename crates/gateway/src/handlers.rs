@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::admission::{AdmissionError, check_rate_limit, validate_and_admit};
-use crate::auth::{AuthError, authenticate_order, extract_user_id};
-use crate::router::RouterError;
-use crate::server::GatewayState;
 use actix_web::{HttpResponse, Responder, web};
 use anvil_sdk::types::{OrderStatus, PlaceOrderRequest, PlaceOrderResponse};
 use thiserror::Error;
+
+use crate::{
+	admission::{AdmissionError, check_rate_limit, validate_and_admit},
+	auth::{AuthError, authenticate_order, extract_user_id},
+	router::RouterError,
+	server::GatewayState,
+};
 
 /// Error types for gateway operations
 #[derive(Debug, Error)]

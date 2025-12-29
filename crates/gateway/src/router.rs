@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::grpc_client::{GrpcClientError, MatchingGrpcClient};
-use anvil_matching::types::Order as MatchingOrder;
-use anvil_sdk::types::PlaceOrderRequest;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use anvil_matching::types::Order as MatchingOrder;
+use anvil_sdk::types::PlaceOrderRequest;
 use thiserror::Error;
 use tokio::sync::Mutex;
+
+use crate::grpc_client::{GrpcClientError, MatchingGrpcClient};
 
 /// Error types for routing operations
 #[derive(Debug, Error)]
@@ -47,6 +49,13 @@ impl Router {
 		let mut engines = HashMap::new();
 		// TODO: Load from configuration
 		engines.insert("BTC-USDT".to_string(), "http://localhost:50051".to_string());
+
+		tracing::info!(
+			target: "server::router",
+			"Router initialized with {} markets",
+			engines.len()
+		);
+
 		Self {
 			matching_engines: engines,
 			clients: Arc::new(Mutex::new(HashMap::new())),

@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use actix_web::{
-	Error,
-	dev::{Service, ServiceRequest, ServiceResponse, Transform},
-};
 use std::future::{Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
+
+use actix_web::{
+	Error,
+	dev::{Service, ServiceRequest, ServiceResponse, Transform},
+};
 use tracing::info;
 
 /// CORS middleware for actix-web

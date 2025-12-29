@@ -35,7 +35,9 @@ tonic-prost = { version = "^0.14" }
 
 # Logging
 tracing = "^0.1"
-tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "^0.3", features = ["env-filter", "time"] }
+tracing-appender = "0.2"
+time = "^0.3"
 
 # Utilities
 uuid = { version = "^1", features = ["v4"] }
@@ -43,6 +45,7 @@ hex = "^0.4"
 config = "^0.15"
 envy = "^0.4"
 dashmap = "^6"
+chrono = "^0.4"
 
 # Cryptography (shared between gateway and sdk)
 ed25519-dalek = { version = "^2", features = ["rand_core"] }

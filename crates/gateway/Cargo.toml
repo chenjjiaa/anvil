@@ -22,12 +22,15 @@ actix-rt = "^2"
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 num_cpus = "^1"
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 config = { workspace = true }
+dotenv = "^0.15"
+chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 k256 = { workspace = true }
 sha2 = { workspace = true }
