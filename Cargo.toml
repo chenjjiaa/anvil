@@ -40,7 +40,7 @@ tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
 # Utilities
 uuid = { version = "^1", features = ["v4"] }
 hex = "^0.4"
-config = "^0.14"
+config = "^0.15"
 envy = "^0.4"
 dashmap = "^6"
 
