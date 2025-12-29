@@ -12,17 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::handlers;
-use crate::middleware;
-use actix_web::{App, HttpServer, web};
-use anyhow::Context;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use actix_web::{App, HttpServer, web};
+use anyhow::Context;
+
+use crate::{
+	handlers,
+	middleware::{CorsMiddleware, LoggingMiddleware},
+	router::Router,
+};
 
 /// Gateway server state
 #[derive(Clone)]
 pub struct GatewayState {
-	pub router: Arc<crate::router::Router>,
+	pub router: Arc<Router>,
 }
 
 /// Gateway server
@@ -33,7 +38,7 @@ pub struct GatewayServer {
 impl GatewayServer {
 	/// Create a new gateway server
 	pub async fn new() -> anyhow::Result<Self> {
-		let router = Arc::new(crate::router::Router::new());
+		let router = Arc::new(Router::new());
 		Ok(Self {
 			state: GatewayState { router },
 		})
@@ -50,7 +55,8 @@ impl GatewayServer {
 			.unwrap_or_else(num_cpus::get);
 
 		tracing::info!(
-			"Starting Anvil Gateway on {} with {} workers",
+			target: "server::server",
+			"Starting HTTP server on {} with {} workers",
 			addr,
 			workers
 		);
@@ -58,8 +64,8 @@ impl GatewayServer {
 		HttpServer::new(move || {
 			App::new()
 				.app_data(web::Data::new(state.clone()))
-				.wrap(middleware::CorsMiddleware)
-				.wrap(middleware::LoggingMiddleware)
+				.wrap(CorsMiddleware)
+				.wrap(LoggingMiddleware)
 				.service(
 					web::scope("/api/v1")
 						.route("/orders", web::post().to(handlers::place_order))

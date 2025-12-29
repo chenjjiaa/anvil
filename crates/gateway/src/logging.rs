@@ -1,0 +1,230 @@
+// Copyright 2025 itscheems
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Logging initialization for Gateway service
+//!
+//! This module provides logging configuration with file output and optional console output.
+//!
+//! # Configuration
+//!
+//! The following environment variables can be used to configure logging:
+//!
+//! - `RUST_LOG`: Log level filter (default: `info`)
+//!   - Examples: `debug`, `info`, `warn`, `error`
+//!   - Can be set per module: `RUST_LOG=anvil_gateway=debug,actix_web=info`
+//!
+//! - `LOG_DIR`: Root directory for log files (default: `{project_root}/logs`)
+//!   - If not set, automatically detects project root and uses `logs/` subdirectory
+//!   - Log files are created in `{LOG_DIR}/gateway/` directory
+//!   - Example: `LOG_DIR=/var/log/anvil`
+//!
+//! - `LOG_TO_CONSOLE`: Enable console output (default: `false`)
+//!   - Set to `true`, `1`, or `yes` to enable console output
+//!   - When enabled, logs are output to both file and stderr
+//!   - Console output includes ANSI colors for better readability
+//!   - Example: `LOG_TO_CONSOLE=true`
+//!
+//! # Log File Format
+//!
+//! - Directory: `{LOG_DIR}/gateway/`
+//! - Filename: `gateway-YYYY-MM-DD.log` (one file per day)
+//! - Format: UTC timestamp, thread ID, log level, module path, message
+//! - ANSI colors: Disabled in file output (enabled in console if `LOG_TO_CONSOLE=true`)
+
+use std::env;
+use std::path::Path;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result};
+use tracing::info;
+use tracing_appender::non_blocking;
+use tracing_subscriber::{
+	EnvFilter, fmt, layer::SubscriberExt, registry::Registry, util::SubscriberInitExt,
+};
+
+use crate::config::{DEFAULT_LOG_LEVEL, DEFAULT_LOG_TO_CONSOLE, LOG_COMPONENT_NAME};
+
+// Store log guard to prevent log loss on program exit
+static LOG_GUARD: OnceLock<non_blocking::WorkerGuard> = OnceLock::new();
+
+/// Find project root directory by walking up from current location
+///
+/// Tries multiple strategies:
+/// 1. Use CARGO_MANIFEST_DIR and walk up to find workspace root
+/// 2. Walk up from current directory to find Cargo.toml
+/// 3. Fallback to current directory
+fn find_project_root() -> std::path::PathBuf {
+	// Try to get project root from CARGO_MANIFEST_DIR (set by Cargo)
+	if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+		let manifest_path = Path::new(&manifest_dir);
+		// Walk up from crate directory to find workspace root (has Cargo.toml with [workspace])
+		let mut current = manifest_path.to_path_buf();
+		loop {
+			let cargo_toml = current.join("Cargo.toml");
+			if cargo_toml.exists() {
+				// Check if it's a workspace root by reading Cargo.toml
+				if let Ok(content) = std::fs::read_to_string(&cargo_toml)
+					&& content.contains("[workspace]")
+				{
+					return current;
+				}
+			}
+			if let Some(parent) = current.parent() {
+				current = parent.to_path_buf();
+			} else {
+				break;
+			}
+		}
+		// If workspace root not found, use crate directory's parent
+		return manifest_path
+			.parent()
+			.map(|p| p.to_path_buf())
+			.unwrap_or_else(|| manifest_path.to_path_buf());
+	}
+
+	// Fallback: try to find project root from current directory
+	if let Ok(mut current_dir) = env::current_dir() {
+		loop {
+			if current_dir.join("Cargo.toml").exists() {
+				return current_dir;
+			}
+			if let Some(parent) = current_dir.parent() {
+				current_dir = parent.to_path_buf();
+			} else {
+				break;
+			}
+		}
+	}
+
+	// Last resort: use current directory
+	env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf())
+}
+
+/// Get log root directory from environment or use project root/logs
+///
+/// # Returns
+///
+/// Returns the log root directory path as a string.
+fn get_log_root() -> String {
+	env::var("LOG_DIR").unwrap_or_else(|_| {
+		let project_root = find_project_root();
+		project_root.join("logs").to_string_lossy().to_string()
+	})
+}
+
+/// Setup file logging layer
+///
+/// # Arguments
+///
+/// * `log_dir` - Directory where log files will be stored
+///
+/// # Returns
+///
+/// Returns a tuple of (file writer, log file path) on success.
+fn setup_file_logging(log_dir: &Path) -> Result<(non_blocking::NonBlocking, std::path::PathBuf)> {
+	// Generate log filename with timestamp (format: {component_name}-YYYY-MM-DD.log)
+	let timestamp = chrono::Utc::now().format("%Y-%m-%d");
+	let log_file = log_dir.join(format!("{}-{}.log", LOG_COMPONENT_NAME, timestamp));
+
+	// Create file appender
+	let file_appender = std::fs::OpenOptions::new()
+		.create(true)
+		.append(true)
+		.open(&log_file)
+		.with_context(|| format!("Failed to open log file: {}", log_file.display()))?;
+
+	// Create non-blocking writer
+	let (file_writer, guard) = non_blocking(file_appender);
+
+	// Store guard to prevent log loss
+	LOG_GUARD.set(guard).ok();
+
+	Ok((file_writer, log_file))
+}
+
+/// Initialize logging with file output and optional console output
+///
+/// # Configuration
+///
+/// See module-level documentation for environment variable configuration.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if logging is successfully initialized, or an error if
+/// log directory or file cannot be created.
+pub fn init_logging() -> Result<()> {
+	dotenv::dotenv().ok();
+
+	// Get log level from environment or use default
+	let log_level = env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_LOG_LEVEL.to_string());
+
+	// Get log root directory
+	let log_root = get_log_root();
+
+	// Create log directory structure: {LOG_DIR}/{component_name}/
+	let log_dir = Path::new(&log_root).join(LOG_COMPONENT_NAME);
+	std::fs::create_dir_all(&log_dir)
+		.with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
+
+	// Setup file logging
+	let (file_writer, log_file) = setup_file_logging(&log_dir)?;
+
+	// Check if console output is enabled
+	// Default: false (only file output)
+	// Set LOG_TO_CONSOLE=true, LOG_TO_CONSOLE=1, or LOG_TO_CONSOLE=yes to enable
+	let log_to_console = env::var("LOG_TO_CONSOLE")
+		.map(|v| v == "true" || v == "1" || v == "yes")
+		.unwrap_or(DEFAULT_LOG_TO_CONSOLE);
+
+	// Initialize tracing filter
+	let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
+
+	// Create file layer (always enabled, no ANSI colors)
+	let file_layer = fmt::layer()
+		.with_writer(file_writer)
+		.with_timer(fmt::time::UtcTime::rfc_3339())
+		.with_thread_ids(true)
+		.with_target(true)
+		.with_thread_names(false)
+		.with_ansi(false); // Disable ANSI colors for file output
+
+	// Initialize subscriber with file layer and optionally console layer
+	if log_to_console {
+		// Console layer (with ANSI colors)
+		let console_layer = fmt::layer()
+			.with_writer(std::io::stderr)
+			.with_timer(fmt::time::UtcTime::rfc_3339())
+			.with_thread_ids(true)
+			.with_target(true)
+			.with_thread_names(false)
+			.with_ansi(true);
+
+		Registry::default()
+			.with(filter)
+			.with(file_layer)
+			.with(console_layer)
+			.init();
+	} else {
+		Registry::default().with(filter).with(file_layer).init();
+	}
+
+	// Log initialization info
+	info!(target: "server", "Log level: {}", log_level);
+	info!(target: "server", "Log file: {}", log_file.display());
+	if log_to_console {
+		info!(target: "server", "Console output: enabled");
+	}
+
+	Ok(())
+}

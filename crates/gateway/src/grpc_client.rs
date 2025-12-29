@@ -19,13 +19,14 @@ pub mod proto {
 	tonic::include_proto!("anvil.matching");
 }
 
+use std::time::Duration;
+
 use anvil_sdk::types::{Order, OrderStatus, Side};
 use proto::matching_service_client::MatchingServiceClient;
 use proto::{
 	OrderSide as ProtoOrderSide, OrderStatus as ProtoOrderStatus, SubmitOrderRequest,
 	SubmitOrderResponse,
 };
-use std::time::Duration;
 use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
 

@@ -22,28 +22,39 @@ mod auth;
 mod config;
 mod grpc_client;
 mod handlers;
+mod logging;
 mod middleware;
 mod router;
 mod server;
 
-use anyhow::{Context, Result};
-use server::GatewayServer;
 use std::net::SocketAddr;
+
+use anyhow::{Context, Result};
+use tracing::info;
+
+use crate::config::DEFAULT_BIND_ADDR;
+use crate::logging::init_logging;
+use server::GatewayServer;
 
 #[actix_rt::main]
 async fn main() -> Result<()> {
-	// Initialize tracing
-	tracing_subscriber::fmt()
-		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-		.init();
+	// Initialize logging first
+	init_logging()?;
 
-	let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-
-	tracing::info!("Starting Anvil Gateway on {}", addr);
+	// Get bind address from environment or use default
+	let bind_addr_str =
+		std::env::var("GATEWAY_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
+	let addr: SocketAddr = bind_addr_str
+		.parse()
+		.with_context(|| format!("Invalid bind address: {}", bind_addr_str))?;
+	info!(target: "server", "Starting Anvil Gateway on {}", addr);
 
 	let server = GatewayServer::new()
 		.await
 		.context("Failed to create gateway server")?;
+
+	info!(target: "server", "Gateway server initialized");
+
 	server
 		.serve(addr)
 		.await

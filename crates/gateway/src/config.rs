@@ -12,9 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+
+use serde::{Deserialize, Serialize};
+
+// Logging configuration constants
+/// Default log level (can be overridden by RUST_LOG environment variable)
+pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+/// Default log directory component name
+pub const LOG_COMPONENT_NAME: &str = "gateway";
+
+/// Default console output enabled (can be overridden by LOG_TO_CONSOLE environment variable)
+pub const DEFAULT_LOG_TO_CONSOLE: bool = false;
+
+// Server configuration constants
+/// Default HTTP server bind address (can be overridden by GATEWAY_BIND_ADDR environment variable)
+pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 
 /// Gateway service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
