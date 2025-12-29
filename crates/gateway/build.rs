@@ -18,7 +18,7 @@ fn main() -> Result<()> {
 	// Compile matching proto for client use
 	let matching_proto = "../matching/proto/matching.proto";
 	if std::path::Path::new(matching_proto).exists() {
-		tonic_build::configure()
+		tonic_prost_build::configure()
 			.build_server(false)
 			.build_client(true)
 			.compile_protos(&[matching_proto], &["../matching/proto/"])

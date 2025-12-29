@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
-	tonic_build::configure()
+	tonic_prost_build::configure()
 		.build_server(true)
 		.build_client(true)
 		.compile_protos(&["proto/matching.proto"], &["proto/"])
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
 	// In production, this would come from a shared proto package
 	let settlement_proto = "../settlement/proto/settlement.proto";
 	if std::path::Path::new(settlement_proto).exists() {
-		tonic_build::configure()
+		tonic_prost_build::configure()
 			.build_server(false)
 			.build_client(true)
 			.compile_protos(&[settlement_proto], &["../settlement/proto/"])
