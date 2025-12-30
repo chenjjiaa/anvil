@@ -33,11 +33,12 @@
 mod admission;
 mod auth;
 mod config;
+mod dispatcher;
 mod grpc_client;
 mod handlers;
 mod logging;
 mod middleware;
-mod router;
+mod routes;
 mod server;
 
 use std::net::SocketAddr;

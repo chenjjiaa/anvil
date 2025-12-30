@@ -21,7 +21,7 @@ use crate::{
 	admission::AdmissionError,
 	auth,
 	auth::{AuthContext, AuthError},
-	router::RouterError,
+	dispatcher::DispatcherError,
 	server::GatewayState,
 };
 
@@ -32,8 +32,8 @@ pub enum GatewayError {
 	Auth(#[from] AuthError),
 	#[error("Admission error: {0}")]
 	Admission(#[from] AdmissionError),
-	#[error("Routing error: {0}")]
-	Routing(#[from] RouterError),
+	#[error("Dispatching error: {0}")]
+	Dispatching(#[from] DispatcherError),
 	#[error("Internal error: {0}")]
 	Internal(String),
 }
@@ -43,7 +43,7 @@ impl actix_web::ResponseError for GatewayError {
 		let status = match self {
 			GatewayError::Auth(_) => actix_web::http::StatusCode::UNAUTHORIZED,
 			GatewayError::Admission(_) => actix_web::http::StatusCode::BAD_REQUEST,
-			GatewayError::Routing(_) => actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+			GatewayError::Dispatching(_) => actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
 			GatewayError::Internal(_) => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
@@ -101,12 +101,12 @@ pub async fn place_order(
 	// Validate and admit the order (protocol-level checks)
 	admission::validate_and_admit(&request)?;
 
-	// Route to matching engine (use principal.id() as identifier)
+	// Dispatch to matching engine (use principal.id() as identifier)
 	// Note: principal.id() returns hex-encoded public key, which is passed
 	// to matching engine as the principal identifier (not a business user ID).
 	let matching_order = state
-		.router
-		.route_order(request.into_inner(), principal.id())
+		.dispatcher
+		.dispatch_order(request.into_inner(), principal.id())
 		.await?;
 
 	Ok(HttpResponse::Ok().json(PlaceOrderResponse {

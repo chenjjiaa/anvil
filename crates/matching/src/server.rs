@@ -65,7 +65,7 @@ impl MatchingService for MatchingServiceImpl {
 			size: req.size,
 			remaining_size: req.remaining_size,
 			timestamp: req.timestamp,
-			user_id: req.user_id.clone(),
+			public_key: req.public_key.clone(),
 		};
 
 		// Submit to matcher

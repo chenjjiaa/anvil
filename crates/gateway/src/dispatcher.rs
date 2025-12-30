@@ -21,37 +21,37 @@ use tokio::sync::Mutex;
 
 use crate::grpc_client::{GrpcClientError, MatchingGrpcClient};
 
-/// Error types for routing operations
+/// Error types for dispatching operations
 #[derive(Debug, Error)]
-pub enum RouterError {
+pub enum DispatcherError {
 	#[error("Matching engine not found for market: {0}")]
 	MatchingEngineNotFound(String),
-	#[error("Routing error: {0}")]
-	RoutingError(String),
+	#[error("Dispatching error: {0}")]
+	DispatchingError(String),
 	#[error("gRPC client error: {0}")]
 	GrpcClient(#[from] GrpcClientError),
 }
 
-/// Router that forwards orders to the appropriate matching engine
+/// Dispatcher that forwards orders to the appropriate matching engine
 ///
 /// Uses gRPC to communicate with matching engines.
-pub struct Router {
+pub struct MatchingDispatcher {
 	/// Market -> Matching engine endpoint mapping
 	matching_engines: HashMap<String, String>,
 	/// Market -> gRPC client mapping (with mutex for async access)
 	clients: Arc<Mutex<HashMap<String, MatchingGrpcClient>>>,
 }
 
-impl Router {
-	/// Create a new router
+impl MatchingDispatcher {
+	/// Create a new dispatcher
 	pub fn new() -> Self {
 		let mut engines = HashMap::new();
 		// TODO: Load from configuration
 		engines.insert("BTC-USDT".to_string(), "http://localhost:50051".to_string());
 
 		tracing::info!(
-			target: "server::router",
-			"Router initialized with {} markets",
+			target: "server::dispatcher",
+			"MatchingDispatcher initialized with {} markets",
 			engines.len()
 		);
 
@@ -62,11 +62,11 @@ impl Router {
 	}
 
 	/// Get or create gRPC client for a market
-	async fn get_client(&self, market: &str) -> Result<MatchingGrpcClient, RouterError> {
+	async fn get_client(&self, market: &str) -> Result<MatchingGrpcClient, DispatcherError> {
 		let endpoint = self
 			.matching_engines
 			.get(market)
-			.ok_or_else(|| RouterError::MatchingEngineNotFound(market.to_string()))?;
+			.ok_or_else(|| DispatcherError::MatchingEngineNotFound(market.to_string()))?;
 
 		let mut clients = self.clients.lock().await;
 
@@ -76,7 +76,7 @@ impl Router {
 		} else {
 			// Create new client
 			let client = MatchingGrpcClient::new(endpoint).await.map_err(|e| {
-				RouterError::RoutingError(format!("Failed to create client: {}", e))
+				DispatcherError::DispatchingError(format!("Failed to create client: {}", e))
 			})?;
 			let client_clone = client.clone();
 			clients.insert(market.to_string(), client);
@@ -84,7 +84,7 @@ impl Router {
 		}
 	}
 
-	/// Route an order to the appropriate matching engine
+	/// Dispatch an order to the appropriate matching engine
 	///
 	/// This converts the gateway's PlaceOrderRequest into the matching
 	/// engine's internal Order format and forwards it via gRPC.
@@ -92,15 +92,15 @@ impl Router {
 	/// Note: The `principal_id` parameter is the cryptographic principal
 	/// identifier (hex-encoded public key), NOT a business user ID.
 	/// Gateway only understands cryptographic identity, not business user identity.
-	pub async fn route_order(
+	pub async fn dispatch_order(
 		&self,
 		request: PlaceOrderRequest,
 		principal_id: String,
-	) -> Result<MatchingOrder, RouterError> {
+	) -> Result<MatchingOrder, DispatcherError> {
 		// Convert PlaceOrderRequest to MatchingOrder
-		let price = request
-			.price
-			.ok_or_else(|| RouterError::RoutingError("Limit orders require a price".to_string()))?;
+		let price = request.price.ok_or_else(|| {
+			DispatcherError::DispatchingError("Limit orders require a price".to_string())
+		})?;
 
 		let order = MatchingOrder {
 			order_id: uuid::Uuid::new_v4().to_string(),
@@ -113,25 +113,23 @@ impl Router {
 				.duration_since(std::time::UNIX_EPOCH)
 				.unwrap()
 				.as_secs(),
-			// Note: Matching engine's Order struct uses `user_id` field name,
-			// but Gateway passes `principal_id` (hex-encoded public key).
-			// This is acceptable because Gateway has eliminated business concepts
-			// at this layer - the matching engine receives a principal identifier.
-			user_id: principal_id,
+			// Matching engine's Order struct uses `public_key` field to store
+			// the cryptographic principal identifier (hex-encoded public key).
+			// Gateway only understands cryptographic identity, not business user identity.
+			public_key: principal_id,
 		};
 
 		// Get gRPC client and submit order
 		let mut client = self.get_client(&request.market).await?;
-		let _response = client
-			.submit_order(order.clone())
-			.await
-			.map_err(|e| RouterError::RoutingError(format!("Failed to submit order: {}", e)))?;
+		let _response = client.submit_order(order.clone()).await.map_err(|e| {
+			DispatcherError::DispatchingError(format!("Failed to submit order: {}", e))
+		})?;
 
 		Ok(order)
 	}
 }
 
-impl Default for Router {
+impl Default for MatchingDispatcher {
 	fn default() -> Self {
 		Self::new()
 	}

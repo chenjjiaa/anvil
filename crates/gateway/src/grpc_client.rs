@@ -79,7 +79,7 @@ impl MatchingGrpcClient {
 			size: order.size,
 			remaining_size: order.remaining_size,
 			timestamp: order.timestamp,
-			user_id: order.user_id.clone(),
+			public_key: order.public_key.clone(),
 		};
 
 		let response = self

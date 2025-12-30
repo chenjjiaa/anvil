@@ -236,7 +236,7 @@ mod tests {
 			size: 1,
 			remaining_size: 1,
 			timestamp: 1000,
-			user_id: "user1".to_string(),
+			public_key: "user1".to_string(),
 		};
 
 		let _ = matcher.match_order(sell_order);
@@ -250,7 +250,7 @@ mod tests {
 			size: 1,
 			remaining_size: 1,
 			timestamp: 2000,
-			user_id: "user2".to_string(),
+			public_key: "user2".to_string(),
 		};
 
 		let result = matcher.match_order(buy_order).unwrap();
@@ -274,7 +274,7 @@ mod tests {
 				size: 1,
 				remaining_size: 1,
 				timestamp: 1000 + i,
-				user_id: format!("user_{}", i),
+				public_key: format!("user_{}", i),
 			};
 			let _ = matcher.match_order(sell_order);
 		}
@@ -288,7 +288,7 @@ mod tests {
 			size: 3,
 			remaining_size: 3,
 			timestamp: 2000,
-			user_id: "user_buyer".to_string(),
+			public_key: "user_buyer".to_string(),
 		};
 
 		let result = matcher.match_order(buy_order).unwrap();

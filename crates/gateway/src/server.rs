@@ -19,15 +19,15 @@ use anyhow::Context;
 
 use crate::{
 	auth::{AuthProvider, SignatureAuthProvider},
-	handlers,
+	dispatcher::MatchingDispatcher,
 	middleware::{CorsMiddleware, LoggingMiddleware},
-	router::Router,
+	routes,
 };
 
 /// Gateway server state
 #[derive(Clone)]
 pub struct GatewayState {
-	pub router: Arc<Router>,
+	pub dispatcher: Arc<MatchingDispatcher>,
 	/// Authentication provider
 	///
 	/// Gateway uses this to extract public keys and verify signatures.
@@ -49,11 +49,11 @@ impl GatewayServer {
 	/// Production systems should create their own AuthProvider implementation
 	/// and pass it to GatewayState.
 	pub async fn new() -> anyhow::Result<Self> {
-		let router = Arc::new(Router::new());
+		let dispatcher = Arc::new(MatchingDispatcher::new());
 		let auth_provider: Arc<dyn AuthProvider> = Arc::new(SignatureAuthProvider);
 		Ok(Self {
 			state: GatewayState {
-				router,
+				dispatcher,
 				auth_provider,
 			},
 		})
@@ -81,16 +81,7 @@ impl GatewayServer {
 				.app_data(web::Data::new(state.clone()))
 				.wrap(CorsMiddleware)
 				.wrap(LoggingMiddleware)
-				.service(
-					web::scope("/api/v1")
-						.route("/orders", web::post().to(handlers::place_order))
-						.route("/orders/{order_id}", web::get().to(handlers::get_order))
-						.route(
-							"/orders/{order_id}",
-							web::delete().to(handlers::cancel_order),
-						),
-				)
-				.route("/health", web::get().to(handlers::health))
+				.configure(routes::configure_routes)
 		})
 		.workers(workers)
 		.bind(addr)

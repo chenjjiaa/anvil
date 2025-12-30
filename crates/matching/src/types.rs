@@ -32,8 +32,12 @@ pub struct Order {
 	pub remaining_size: u64,
 	/// Timestamp when order was received (for time priority)
 	pub timestamp: u64,
-	/// User/trader identifier
-	pub user_id: String,
+	/// Cryptographic principal identifier (hex-encoded public key)
+	///
+	/// This is NOT a business user ID. Gateway only understands cryptographic
+	/// identity, not business user identity. The matching engine receives
+	/// the principal identifier (public key) from Gateway.
+	pub public_key: String,
 }
 
 /// Matching result from processing an order
