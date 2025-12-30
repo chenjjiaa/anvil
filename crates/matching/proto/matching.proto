@@ -42,7 +42,7 @@ message SubmitOrderRequest {
   uint64 size = 5;
   uint64 remaining_size = 6;
   uint64 timestamp = 7;
-  string user_id = 8;
+  string public_key = 8;
 }
 
 // Order submission response

@@ -86,7 +86,7 @@ async fn get_client(&self, market: &str) -> Result<MatchingGrpcClient, RouterErr
 pub async fn route_order(
     &self,
     request: PlaceOrderRequest,
-    user_id: String,
+    public_key: String,
 ) -> Result<MatchingOrder, RouterError> {
     // 1. 提取价格（限价单必须提供价格）
     let price = request.price
@@ -107,7 +107,7 @@ pub async fn route_order(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs(),
-        user_id,
+        public_key,
     };
 
     // 4. 获取 gRPC 客户端并提交订单

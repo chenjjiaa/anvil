@@ -147,13 +147,21 @@ where
 			match &res {
 				Ok(response) => {
 					info!(
+						method = %method,
+						path = %path,
 						status = response.status().as_u16(),
 						duration_ms = duration.as_millis(),
 						"Request completed"
 					);
 				}
 				Err(e) => {
-					tracing::error!(error = %e, duration_ms = duration.as_millis(), "Request failed");
+					tracing::error!(
+						method = %method,
+						path = %path,
+						error = %e,
+						duration_ms = duration.as_millis(),
+						"Request failed"
+					);
 				}
 			}
 
