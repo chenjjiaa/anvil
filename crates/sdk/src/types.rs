@@ -58,8 +58,6 @@ pub struct PlaceOrderRequest {
 	pub size: u64,
 	/// Client-provided order ID (optional)
 	pub client_order_id: Option<String>,
-	/// Signature for authentication
-	pub signature: String,
 }
 
 /// Response from placing an order

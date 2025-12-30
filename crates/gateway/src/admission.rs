@@ -12,14 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::Instant;
+//! Protocol-level admission control for Gateway
+//!
+//! This module performs protocol-level admission checks:
+//! - Rate limiting per cryptographic principal (public key)
+//! - Market availability checks
+//! - Order format validation
+//!
+//! # Rate Limiting Model
+//!
+//! Gateway only performs rate limiting at the **cryptographic principal level**,
+//! NOT at the business user level. This means:
+//!
+//! - Each public key has its own rate limit
+//! - A single entity can use multiple public keys (this is intentional)
+//! - User-level rate limiting should be handled by the application layer
+//!
+//! Gateway does NOT perform:
+//! - User account balance checks (handled by settlement service)
+//! - Business-level user identity verification
+//! - KYC or compliance checks
+
+use std::{num::NonZeroU32, sync::Arc, time::Instant};
 
 use anvil_sdk::types::{OrderType, PlaceOrderRequest};
 use dashmap::DashMap;
 use governor::{Quota, RateLimiter};
 use thiserror::Error;
+
+use crate::auth::Principal;
 
 /// Error types for admission control
 #[derive(Debug, Error)]
@@ -43,8 +64,12 @@ struct MarketAvailability {
 	last_check: Instant,
 }
 
-/// Rate limiter per user
-type UserRateLimiter = Arc<
+/// Rate limiter per principal (public key)
+///
+/// Gateway only performs rate limiting at the cryptographic principal level,
+/// not at the business user level. This is because Gateway only understands
+/// cryptographic identity (public keys), not business user identity.
+type PrincipalRateLimiter = Arc<
 	RateLimiter<
 		governor::state::direct::NotKeyed,
 		governor::state::InMemoryState,
@@ -53,9 +78,17 @@ type UserRateLimiter = Arc<
 >;
 
 /// Admission controller
+///
+/// Performs protocol-level admission control:
+/// - Rate limiting per cryptographic principal (public key)
+/// - Market availability checks
+/// - Order format validation
+///
+/// Note: Gateway does NOT perform user-level rate limiting or balance checks.
+/// Those are business logic concerns that belong in the application layer.
 pub struct AdmissionController {
-	/// Rate limiters per user
-	rate_limiters: DashMap<String, UserRateLimiter>,
+	/// Rate limiters per principal (public key)
+	rate_limiters: DashMap<String, PrincipalRateLimiter>,
 	/// Market availability
 	markets: Arc<DashMap<String, MarketAvailability>>,
 	/// Requests per second quota
@@ -77,11 +110,20 @@ impl AdmissionController {
 		}
 	}
 
-	/// Check rate limit for a user
-	pub fn check_rate_limit(&self, user_id: &str) -> Result<(), AdmissionError> {
+	/// Check rate limit for a principal (public key)
+	///
+	/// Gateway only performs rate limiting at the cryptographic principal level.
+	/// This prevents abuse by individual public keys, but does not prevent
+	/// a single entity from using multiple public keys to bypass limits.
+	///
+	/// This is intentional - Gateway only understands cryptographic identity,
+	/// not business user identity. User-level rate limiting should be handled
+	/// by the application layer if needed.
+	pub fn check_rate_limit(&self, principal: &Principal) -> Result<(), AdmissionError> {
+		let principal_id = principal.id();
 		let limiter = self
 			.rate_limiters
-			.entry(user_id.to_string())
+			.entry(principal_id)
 			.or_insert_with(|| Arc::new(RateLimiter::direct(self.quota)))
 			.clone();
 
@@ -110,16 +152,17 @@ impl AdmissionController {
 			.unwrap_or(true) // Default to available if not tracked
 	}
 
-	/// Check user balance (placeholder - would query blockchain)
+	/// Check balance (placeholder - would query blockchain)
+	///
+	/// Note: This function is intentionally minimal. Balance checking is
+	/// business logic that should be handled by the application layer or
+	/// settlement service, not by Gateway. Gateway only performs protocol-level
+	/// admission control.
 	#[allow(dead_code)]
-	pub async fn check_balance(
-		&self,
-		_user_id: &str,
-		_market: &str,
-		_required: u64,
-	) -> Result<(), AdmissionError> {
-		// TODO: Query blockchain for user balance
+	pub async fn check_balance(&self, _market: &str, _required: u64) -> Result<(), AdmissionError> {
+		// TODO: Query blockchain for balance if needed
 		// For now, assume sufficient balance
+		// In production, this should be handled by settlement service
 		Ok(())
 	}
 }
@@ -171,25 +214,27 @@ pub fn validate_and_admit(request: &PlaceOrderRequest) -> Result<(), AdmissionEr
 		return Err(AdmissionError::MarketNotAvailable(request.market.clone()));
 	}
 
-	// Rate limiting is checked per user in the handler
-	// Balance checking would be async and done in handler
+	// Rate limiting is checked per principal in the handler
+	// Balance checking would be async and done in handler if needed
 
 	Ok(())
 }
 
-/// Check rate limit for a user
-pub fn check_rate_limit(user_id: &str) -> Result<(), AdmissionError> {
-	get_admission_controller().check_rate_limit(user_id)
+/// Check rate limit for a principal (public key)
+///
+/// Gateway only performs rate limiting at the cryptographic principal level.
+/// This is protocol-level protection, not business-level user protection.
+pub fn check_rate_limit(principal: &Principal) -> Result<(), AdmissionError> {
+	get_admission_controller().check_rate_limit(principal)
 }
 
-/// Check user balance (async)
+/// Check balance (async)
+///
+/// Note: This is intentionally minimal. Balance checking is business logic
+/// that should be handled by the application layer or settlement service.
 #[allow(dead_code)]
-pub async fn check_balance(
-	user_id: &str,
-	market: &str,
-	required: u64,
-) -> Result<(), AdmissionError> {
+pub async fn check_balance(market: &str, required: u64) -> Result<(), AdmissionError> {
 	get_admission_controller()
-		.check_balance(user_id, market, required)
+		.check_balance(market, required)
 		.await
 }

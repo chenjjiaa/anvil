@@ -33,6 +33,7 @@ excludes = [
     ".gitignore",
     ".gitattributes",
     ".editorconfig",
+    ".env.example",
     ".git",
     "LICENSE",
     "Makefile",

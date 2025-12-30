@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anvil_matching::types::Order as MatchingOrder;
 use anvil_sdk::types::PlaceOrderRequest;
@@ -89,10 +88,14 @@ impl Router {
 	///
 	/// This converts the gateway's PlaceOrderRequest into the matching
 	/// engine's internal Order format and forwards it via gRPC.
+	///
+	/// Note: The `principal_id` parameter is the cryptographic principal
+	/// identifier (hex-encoded public key), NOT a business user ID.
+	/// Gateway only understands cryptographic identity, not business user identity.
 	pub async fn route_order(
 		&self,
 		request: PlaceOrderRequest,
-		user_id: String,
+		principal_id: String,
 	) -> Result<MatchingOrder, RouterError> {
 		// Convert PlaceOrderRequest to MatchingOrder
 		let price = request
@@ -110,7 +113,11 @@ impl Router {
 				.duration_since(std::time::UNIX_EPOCH)
 				.unwrap()
 				.as_secs(),
-			user_id,
+			// Note: Matching engine's Order struct uses `user_id` field name,
+			// but Gateway passes `principal_id` (hex-encoded public key).
+			// This is acceptable because Gateway has eliminated business concepts
+			// at this layer - the matching engine receives a principal identifier.
+			user_id: principal_id,
 		};
 
 		// Get gRPC client and submit order

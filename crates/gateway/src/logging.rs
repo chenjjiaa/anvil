@@ -42,9 +42,7 @@
 //! - Format: UTC timestamp, thread ID, log level, module path, message
 //! - ANSI colors: Disabled in file output (enabled in console if `LOG_TO_CONSOLE=true`)
 
-use std::env;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::{env, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use tracing::info;

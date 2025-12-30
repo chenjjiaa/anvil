@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::{Ready, ready};
-use std::pin::Pin;
-use std::rc::Rc;
-use std::task::{Context, Poll};
+use std::{
+	future::{Ready, ready},
+	pin::Pin,
+	rc::Rc,
+	task::{Context, Poll},
+};
 
 use actix_web::{
 	Error,
