@@ -14,8 +14,21 @@
 
 //! Order Gateway Service
 //!
-//! This service handles client order submission, performs authentication
-//! and validation, and routes orders to the appropriate matching engine.
+//! This service handles client order submission, performs cryptographic
+//! authentication and protocol-level validation, and routes orders to the
+//! appropriate matching engine.
+//!
+//! # Identity Model
+//!
+//! Gateway only understands **cryptographic identity** (public keys and signatures),
+//! NOT business user identity (user accounts, KYC, profiles, etc.).
+//!
+//! - Gateway verifies that orders are signed by the holder of a private key
+//! - Gateway performs rate limiting at the cryptographic principal level (public key)
+//! - Gateway does NOT understand user accounts, user IDs, or business-level identity
+//!
+//! This design ensures Gateway remains infrastructure-focused and does not
+//! become entangled with business logic.
 
 mod admission;
 mod auth;
@@ -32,8 +45,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::config::DEFAULT_BIND_ADDR;
-use crate::logging::init_logging;
+use crate::{config::DEFAULT_BIND_ADDR, logging::init_logging};
 use server::GatewayServer;
 
 #[actix_rt::main]

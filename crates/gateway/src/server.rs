@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use actix_web::{App, HttpServer, web};
 use anyhow::Context;
 
 use crate::{
+	auth::{AuthProvider, SignatureAuthProvider},
 	handlers,
 	middleware::{CorsMiddleware, LoggingMiddleware},
 	router::Router,
@@ -28,6 +28,13 @@ use crate::{
 #[derive(Clone)]
 pub struct GatewayState {
 	pub router: Arc<Router>,
+	/// Authentication provider
+	///
+	/// Gateway uses this to extract public keys and verify signatures.
+	/// The default implementation is SignatureAuthProvider, but production
+	/// systems should provide their own implementation based on their
+	/// authentication requirements.
+	pub auth_provider: Arc<dyn AuthProvider>,
 }
 
 /// Gateway server
@@ -37,10 +44,18 @@ pub struct GatewayServer {
 
 impl GatewayServer {
 	/// Create a new gateway server
+	///
+	/// Uses the default SignatureAuthProvider for authentication.
+	/// Production systems should create their own AuthProvider implementation
+	/// and pass it to GatewayState.
 	pub async fn new() -> anyhow::Result<Self> {
 		let router = Arc::new(Router::new());
+		let auth_provider: Arc<dyn AuthProvider> = Arc::new(SignatureAuthProvider);
 		Ok(Self {
-			state: GatewayState { router },
+			state: GatewayState {
+				router,
+				auth_provider,
+			},
 		})
 	}
 

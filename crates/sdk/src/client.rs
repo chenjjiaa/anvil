@@ -109,18 +109,74 @@ impl Client {
 	}
 
 	/// Place an order with automatic signing
+	///
+	/// This method signs the order request and places it with authentication
+	/// materials in HTTP headers (not in the request body).
+	///
+	/// # Protocol Specification
+	///
+	/// Authentication materials are placed in HTTP headers:
+	/// - Public key: `X-Public-Key` header
+	/// - Signature: `X-Signature` header
+	///
+	/// The request body contains ONLY business data (market, price, size, etc.),
+	/// NOT authentication materials.
 	pub async fn place_order_signed(
 		&self,
-		mut request: PlaceOrderRequest,
+		request: PlaceOrderRequest,
 		private_key: &[u8],
 		algorithm: SignatureAlgorithm,
 	) -> Result<PlaceOrderResponse, ClientError> {
-		// Sign the request
+		// Sign the request payload (business data only)
 		let signature = sign_order_request(&request, private_key, algorithm)
 			.map_err(|e| ClientError::Authentication(format!("Signing failed: {}", e)))?;
-		request.signature = signature;
 
-		self.place_order(request).await
+		// Extract public key from private key
+		let public_key = match algorithm {
+			crate::signing::SignatureAlgorithm::Ed25519 => {
+				use ed25519_dalek::SigningKey;
+				let signing_key = SigningKey::from_bytes(private_key.try_into().map_err(|_| {
+					ClientError::Authentication("Invalid Ed25519 private key length".to_string())
+				})?);
+				signing_key.verifying_key().to_bytes().to_vec()
+			}
+			crate::signing::SignatureAlgorithm::Ecdsa => {
+				use k256::ecdsa::SigningKey;
+				let signing_key = SigningKey::from_bytes(private_key.into()).map_err(|e| {
+					ClientError::Authentication(format!("Invalid ECDSA private key: {}", e))
+				})?;
+				signing_key.verifying_key().to_sec1_bytes().to_vec()
+			}
+		};
+
+		// Place order with authentication materials in headers
+		let url = format!("{}/api/v1/orders", self.base_url);
+
+		let response = self
+			.client
+			.post(&url)
+			.header("X-Public-Key", hex::encode(&public_key))
+			.header("X-Signature", &signature)
+			.json(&request)
+			.send()
+			.await
+			.map_err(|e| ClientError::Network(format!("Request failed: {}", e)))?;
+
+		if !response.status().is_success() {
+			let status = response.status();
+			let error_text = response
+				.text()
+				.await
+				.unwrap_or_else(|_| format!("HTTP {}", status));
+			return Err(ClientError::Server(format!("{}: {}", status, error_text)));
+		}
+
+		let order_response: PlaceOrderResponse = response
+			.json()
+			.await
+			.map_err(|e| ClientError::Serialization(format!("Failed to parse response: {}", e)))?;
+
+		Ok(order_response)
 	}
 
 	/// Get order status by order ID

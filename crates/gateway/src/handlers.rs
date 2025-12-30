@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use anvil_sdk::types::{OrderStatus, PlaceOrderRequest, PlaceOrderResponse};
 use thiserror::Error;
 
 use crate::{
-	admission::{AdmissionError, check_rate_limit, validate_and_admit},
-	auth::{AuthError, authenticate_order, extract_user_id},
+	admission,
+	admission::AdmissionError,
+	auth,
+	auth::{AuthContext, AuthError},
 	router::RouterError,
 	server::GatewayState,
 };
@@ -60,39 +62,51 @@ pub async fn health() -> impl Responder {
 }
 
 /// Handle order placement request
+///
+/// Gateway performs cryptographic authentication and protocol-level admission control.
+/// It does NOT understand business user identity - all operations are based on
+/// cryptographic principals (public keys).
+///
+/// # Authentication Model (Protocol Requirement)
+///
+/// **Authentication materials MUST be in HTTP headers, NOT in request body.**
+///
+/// This is a hard protocol requirement:
+/// - Public key: `X-Public-Key` header
+/// - Signature: `X-Signature` header
+///
+/// The order payload (`PlaceOrderRequest`) contains ONLY business data
+/// (market, price, size, etc.), NEVER authentication materials.
 pub async fn place_order(
 	state: web::Data<GatewayState>,
 	request: web::Json<PlaceOrderRequest>,
+	req: HttpRequest,
 ) -> Result<HttpResponse, GatewayError> {
-	// Extract user ID (placeholder - in production, extract from auth token)
-	let user_id = extract_user_id(&request);
+	// Construct AuthContext from HTTP request
+	// Authentication materials MUST be in headers per protocol specification
+	let auth_ctx = AuthContext::from_http(req.headers());
 
-	// Check rate limit
-	check_rate_limit(&user_id)?;
+	// Extract principal using AuthProvider
+	// This extracts the public key and signature from headers/metadata,
+	// creates a Principal, and verifies the signature against the order payload
+	let principal =
+		auth::authenticate_with_provider(&auth_ctx, &request, state.auth_provider.as_ref())
+			.map_err(GatewayError::Auth)?;
 
-	// Authenticate the order
-	// Try to extract public key from request, fallback to placeholder for now
-	let public_key = match crate::auth::extract_public_key(&request) {
-		Ok(key) => key,
-		Err(_) => {
-			// TODO: In production, require public key in request
-			// For now, use placeholder (will fail verification)
-			b"placeholder_public_key_32_bytes!!".to_vec()
-		}
-	};
+	// Check rate limit by principal (public key)
+	// Gateway only performs rate limiting at the cryptographic principal level,
+	// not at the business user level.
+	admission::check_rate_limit(&principal)?;
 
-	// Only authenticate if signature is provided
-	if !request.signature.is_empty() {
-		authenticate_order(&request, &public_key)?;
-	}
+	// Validate and admit the order (protocol-level checks)
+	admission::validate_and_admit(&request)?;
 
-	// Validate and admit the order
-	validate_and_admit(&request)?;
-
-	// Route to matching engine
+	// Route to matching engine (use principal.id() as identifier)
+	// Note: principal.id() returns hex-encoded public key, which is passed
+	// to matching engine as the principal identifier (not a business user ID).
 	let matching_order = state
 		.router
-		.route_order(request.into_inner(), user_id)
+		.route_order(request.into_inner(), principal.id())
 		.await?;
 
 	Ok(HttpResponse::Ok().json(PlaceOrderResponse {
