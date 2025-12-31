@@ -38,7 +38,8 @@
 //! # Log File Format
 //!
 //! - Directory: `{LOG_DIR}/gateway/`
-//! - Filename: `gateway-YYYY-MM-DD.log` (one file per day)
+//! - Rotation: one file per day (UTC) using `tracing_appender::rolling::daily`
+//! - Filename: managed by `tracing-appender` rolling appender (date-suffixed)
 //! - Format: UTC timestamp, thread ID, log level, module path, message
 //! - ANSI colors: Disabled in file output (enabled in console if `LOG_TO_CONSOLE=true`)
 
@@ -46,7 +47,7 @@ use std::{env, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use tracing::info;
-use tracing_appender::non_blocking;
+use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{
 	EnvFilter, fmt, layer::SubscriberExt, registry::Registry, util::SubscriberInitExt,
 };
@@ -121,26 +122,16 @@ fn get_log_root() -> String {
 	})
 }
 
-/// Setup file logging layer
+/// Setup daily-rolling file logging layer.
 ///
-/// # Arguments
-///
-/// * `log_dir` - Directory where log files will be stored
-///
-/// # Returns
-///
-/// Returns a tuple of (file writer, log file path) on success.
-fn setup_file_logging(log_dir: &Path) -> Result<(non_blocking::NonBlocking, std::path::PathBuf)> {
-	// Generate log filename with timestamp (format: {component_name}-YYYY-MM-DD.log)
-	let timestamp = chrono::Utc::now().format("%Y-%m-%d");
-	let log_file = log_dir.join(format!("{}-{}.log", LOG_COMPONENT_NAME, timestamp));
-
-	// Create file appender
-	let file_appender = std::fs::OpenOptions::new()
-		.create(true)
-		.append(true)
-		.open(&log_file)
-		.with_context(|| format!("Failed to open log file: {}", log_file.display()))?;
+/// `tracing-appender` handles the rotation, so long-running processes will
+/// automatically switch files when the date changes.
+fn setup_file_logging(log_dir: &Path) -> Result<non_blocking::NonBlocking> {
+	// Daily rolling file appender in {LOG_DIR}/{component_name}/
+	//
+	// Note: the rolling appender controls the exact filename on disk. We only
+	// provide the base filename here.
+	let file_appender = rolling::daily(log_dir, format!("{}.log", LOG_COMPONENT_NAME));
 
 	// Create non-blocking writer
 	let (file_writer, guard) = non_blocking(file_appender);
@@ -148,7 +139,7 @@ fn setup_file_logging(log_dir: &Path) -> Result<(non_blocking::NonBlocking, std:
 	// Store guard to prevent log loss
 	LOG_GUARD.set(guard).ok();
 
-	Ok((file_writer, log_file))
+	Ok(file_writer)
 }
 
 /// Initialize logging with file output and optional console output
@@ -176,7 +167,7 @@ pub fn init_logging() -> Result<()> {
 		.with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
 
 	// Setup file logging
-	let (file_writer, log_file) = setup_file_logging(&log_dir)?;
+	let file_writer = setup_file_logging(&log_dir)?;
 
 	// Check if console output is enabled
 	// Default: false (only file output)
@@ -219,7 +210,12 @@ pub fn init_logging() -> Result<()> {
 
 	// Log initialization info
 	info!(target: "server", "Log level: {}", log_level);
-	info!(target: "server", "Log file: {}", log_file.display());
+	info!(target: "server", "Log directory: {}", log_dir.display());
+	info!(
+		target: "server",
+		"Log file base name: {}.log (daily rolling)",
+		LOG_COMPONENT_NAME
+	);
 	if log_to_console {
 		info!(target: "server", "Console output: enabled");
 	}

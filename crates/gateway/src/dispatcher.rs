@@ -26,6 +26,8 @@ use crate::grpc_client::{GrpcClientError, MatchingGrpcClient};
 pub enum DispatcherError {
 	#[error("Matching engine not found for market: {0}")]
 	MatchingEngineNotFound(String),
+	#[error("Matching confirmation not received within gateway timeout")]
+	MatchingTimeout,
 	#[error("Dispatching error: {0}")]
 	DispatchingError(String),
 	#[error("gRPC client error: {0}")]
@@ -121,9 +123,11 @@ impl MatchingDispatcher {
 
 		// Get gRPC client and submit order
 		let mut client = self.get_client(&request.market).await?;
-		let _response = client.submit_order(order.clone()).await.map_err(|e| {
-			DispatcherError::DispatchingError(format!("Failed to submit order: {}", e))
-		})?;
+		match client.submit_order(order.clone()).await {
+			Ok(_response) => {}
+			Err(GrpcClientError::Timeout) => return Err(DispatcherError::MatchingTimeout),
+			Err(e) => return Err(DispatcherError::GrpcClient(e)),
+		}
 
 		Ok(order)
 	}

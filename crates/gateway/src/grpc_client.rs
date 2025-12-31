@@ -22,19 +22,22 @@ pub mod proto {
 use std::time::Duration;
 
 use anvil_sdk::types::{Order, OrderStatus, Side};
-use proto::matching_service_client::MatchingServiceClient;
 use proto::{
 	OrderSide as ProtoOrderSide, OrderStatus as ProtoOrderStatus, SubmitOrderRequest,
-	SubmitOrderResponse,
+	SubmitOrderResponse, matching_service_client::MatchingServiceClient,
 };
 use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
+
+use crate::config::DEFAULT_MATCHING_RPC_TIMEOUT_MS;
 
 /// Error types for gRPC client operations
 #[derive(Debug, Error)]
 pub enum GrpcClientError {
 	#[error("gRPC transport error: {0}")]
 	Transport(String),
+	#[error("gRPC timeout")]
+	Timeout,
 	#[error("gRPC status error: {0}")]
 	Status(String),
 	#[error("Serialization error: {0}")]
@@ -46,11 +49,19 @@ pub enum GrpcClientError {
 #[derive(Clone)]
 pub struct MatchingGrpcClient {
 	client: MatchingServiceClient<Channel>,
+	rpc_timeout: Duration,
 }
 
 impl MatchingGrpcClient {
 	/// Create a new gRPC client
 	pub async fn new(endpoint: &str) -> Result<Self, GrpcClientError> {
+		let rpc_timeout_ms = std::env::var("GATEWAY_MATCHING_RPC_TIMEOUT_MS")
+			.map(|v| {
+				v.parse::<u64>()
+					.expect("GATEWAY_MATCHING_RPC_TIMEOUT_MS must be a valid u64")
+			})
+			.unwrap_or(DEFAULT_MATCHING_RPC_TIMEOUT_MS);
+
 		let channel = Endpoint::from_shared(endpoint.to_string())
 			.map_err(|e| GrpcClientError::Transport(format!("Invalid endpoint: {}", e)))?
 			.timeout(Duration::from_secs(5))
@@ -60,6 +71,7 @@ impl MatchingGrpcClient {
 
 		Ok(Self {
 			client: MatchingServiceClient::new(channel),
+			rpc_timeout: Duration::from_millis(rpc_timeout_ms),
 		})
 	}
 
@@ -82,11 +94,20 @@ impl MatchingGrpcClient {
 			public_key: order.public_key.clone(),
 		};
 
+		let mut req = tonic::Request::new(request);
+		req.set_timeout(self.rpc_timeout);
+
 		let response = self
 			.client
-			.submit_order(tonic::Request::new(request))
+			.submit_order(req)
 			.await
-			.map_err(|e| GrpcClientError::Status(format!("gRPC error: {}", e)))?
+			.map_err(|status| {
+				if status.code() == tonic::Code::DeadlineExceeded {
+					GrpcClientError::Timeout
+				} else {
+					GrpcClientError::Status(format!("gRPC error: {}", status))
+				}
+			})?
 			.into_inner();
 
 		Ok(response)

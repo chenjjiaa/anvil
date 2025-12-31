@@ -30,6 +30,29 @@ pub const DEFAULT_LOG_TO_CONSOLE: bool = false;
 /// Default HTTP server bind address (can be overridden by GATEWAY_BIND_ADDR environment variable)
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 
+// Admission / anti-abuse configuration constants
+/// Default requests-per-second limit per principal (can be overridden by GATEWAY_RATE_LIMIT_RPS)
+pub const DEFAULT_RATE_LIMIT_RPS: u32 = 100;
+
+/// Default burst capacity per principal (can be overridden by GATEWAY_RATE_LIMIT_BURST)
+pub const DEFAULT_RATE_LIMIT_BURST: u32 = 200;
+
+/// Default replay window in seconds (can be overridden by GATEWAY_REPLAY_WINDOW_SECS)
+pub const DEFAULT_REPLAY_WINDOW_SECS: u64 = 30;
+
+/// Default nonce TTL in seconds (can be overridden by GATEWAY_NONCE_TTL_SECS)
+pub const DEFAULT_NONCE_TTL_SECS: u64 = 120;
+
+/// Default replay cache maximum capacity in entries (can be overridden by GATEWAY_REPLAY_CACHE_MAX_CAPACITY)
+/// This provides a strict upper bound on memory usage for replay protection.
+pub const DEFAULT_REPLAY_CACHE_MAX_CAPACITY: u64 = 1_000_000;
+
+/// Default maximum HTTP request body size in bytes (can be overridden by GATEWAY_MAX_BODY_BYTES)
+pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// Default matching-engine RPC timeout in milliseconds (can be overridden by GATEWAY_MATCHING_RPC_TIMEOUT_MS)
+pub const DEFAULT_MATCHING_RPC_TIMEOUT_MS: u64 = 1_500;
+
 /// Gateway service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]

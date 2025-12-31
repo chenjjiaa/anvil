@@ -23,6 +23,7 @@ use actix_web::{
 	Error,
 	dev::{Service, ServiceRequest, ServiceResponse, Transform},
 };
+use tracing::Instrument;
 use tracing::info;
 
 /// CORS middleware for actix-web
@@ -83,7 +84,11 @@ where
 			);
 			res.headers_mut().insert(
 				actix_web::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
-				HeaderValue::from_static("Content-Type, Authorization"),
+				// Note: include gateway auth protocol headers for browser preflight.
+				// Gateway requires auth materials in metadata (headers), not in body.
+				HeaderValue::from_static(
+					"Content-Type, Authorization, X-Public-Key, X-Signature, X-Signature-Alg, X-Timestamp, X-Nonce",
+				),
 			);
 
 			Ok(res)
@@ -137,35 +142,37 @@ where
 		let path = req.path().to_string();
 		let span =
 			tracing::span!(tracing::Level::INFO, "http_request", method = %method, path = %path);
-		let _enter = span.enter();
 
-		Box::pin(async move {
-			let start = std::time::Instant::now();
-			let res = service.call(req).await;
-			let duration = start.elapsed();
+		Box::pin(
+			async move {
+				let start = std::time::Instant::now();
+				let res = service.call(req).await;
+				let duration = start.elapsed();
 
-			match &res {
-				Ok(response) => {
-					info!(
-						method = %method,
-						path = %path,
-						status = response.status().as_u16(),
-						duration_ms = duration.as_millis(),
-						"Request completed"
-					);
+				match &res {
+					Ok(response) => {
+						info!(
+							method = %method,
+							path = %path,
+							status = response.status().as_u16(),
+							duration_ms = duration.as_millis(),
+							"Request completed"
+						);
+					}
+					Err(e) => {
+						tracing::error!(
+							method = %method,
+							path = %path,
+							error = %e,
+							duration_ms = duration.as_millis(),
+							"Request failed"
+						);
+					}
 				}
-				Err(e) => {
-					tracing::error!(
-						method = %method,
-						path = %path,
-						error = %e,
-						duration_ms = duration.as_millis(),
-						"Request failed"
-					);
-				}
+
+				res
 			}
-
-			res
-		})
+			.instrument(span),
+		)
 	}
 }

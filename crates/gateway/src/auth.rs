@@ -46,7 +46,9 @@
 //! This is a hard protocol requirement, not a recommendation:
 //!
 //! - **HTTP**: Public key in `X-Public-Key` header, signature in `X-Signature` header
+//!   - Signature algorithm hint in `X-Signature-Alg` header (recommended for determinism)
 //! - **gRPC**: Public key in `public-key` metadata, signature in `signature` metadata
+//!   - Signature algorithm hint in `signature-alg` metadata (recommended for determinism)
 //!
 //! The order payload (`PlaceOrderRequest`) contains ONLY business data (market, price, size, etc.),
 //! NEVER authentication materials. This strict separation ensures:
@@ -68,6 +70,18 @@ pub enum AuthError {
 	InvalidSignature(String),
 	#[error("Missing signature")]
 	MissingSignature,
+	#[error("Invalid signature algorithm: {0}")]
+	InvalidSignatureAlgorithm(String),
+	#[error(
+		"Unable to determine signature algorithm (provide X-Signature-Alg / signature-alg, or use a supported public key encoding)"
+	)]
+	UnableToDetermineAlgorithm,
+	#[error("Missing timestamp")]
+	MissingTimestamp,
+	#[error("Invalid timestamp: {0}")]
+	InvalidTimestamp(String),
+	#[error("Missing nonce")]
+	MissingNonce,
 	#[error("Public key not found")]
 	PublicKeyNotFound,
 	#[error("Unsupported signature algorithm: {0}")]
@@ -86,6 +100,7 @@ pub enum SignatureAlgorithm {
 
 impl SignatureAlgorithm {
 	/// Detect algorithm from signature length
+	#[allow(dead_code)]
 	pub fn detect(signature: &str) -> Result<Self, AuthError> {
 		// Decode hex signature
 		let sig_bytes = hex::decode(signature)
@@ -136,6 +151,16 @@ impl Principal {
 	}
 }
 
+/// Authenticated principal plus protocol-level anti-replay metadata.
+///
+/// The `(timestamp, nonce)` pair is part of the signed message and must be
+/// provided in request metadata (headers/metadata), not in the business payload.
+pub struct AuthenticatedPrincipal {
+	pub principal: Principal,
+	pub timestamp: u64,
+	pub nonce: String,
+}
+
 /// Authentication context - protocol-agnostic container for auth materials
 ///
 /// This structure abstracts away protocol-specific details (HTTP headers,
@@ -178,6 +203,8 @@ impl<'a> AuthContext<'a> {
 	/// Authentication materials must be in HTTP headers:
 	/// - Public key: `X-Public-Key` header
 	/// - Signature: `X-Signature` header
+	/// - Timestamp: `X-Timestamp` header (unix seconds)
+	/// - Nonce: `X-Nonce` header (opaque string)
 	pub fn from_http(headers: &'a actix_web::http::header::HeaderMap) -> Self {
 		Self {
 			http_headers: Some(headers),
@@ -192,6 +219,8 @@ impl<'a> AuthContext<'a> {
 	/// Authentication materials must be in gRPC metadata:
 	/// - Public key: `public-key` metadata key
 	/// - Signature: `signature` metadata key
+	/// - Timestamp: `timestamp` metadata key (unix seconds)
+	/// - Nonce: `nonce` metadata key (opaque string)
 	#[allow(dead_code)]
 	pub fn from_grpc(metadata: &'a tonic::metadata::MetadataMap) -> Self {
 		Self {
@@ -253,12 +282,19 @@ pub trait AuthProvider: Send + Sync {
 
 	/// Detect signature algorithm from authentication context
 	///
-	/// Default implementation uses signature length, but can be overridden
-	/// for custom schemes (e.g., JWT-based auth, algorithm in header).
-	fn detect_algorithm(&self, ctx: &AuthContext) -> Result<SignatureAlgorithm, AuthError> {
-		// Default: detect from signature
-		let signature = self.extract_signature(ctx)?;
-		SignatureAlgorithm::detect(&signature)
+	/// Default implementation prefers explicit metadata (if present), otherwise falls
+	/// back to public key format/length (no guessing based on signature length).
+	fn detect_algorithm(
+		&self,
+		ctx: &AuthContext,
+		public_key: &[u8],
+		_signature: &str,
+	) -> Result<SignatureAlgorithm, AuthError> {
+		if let Some(hint) = extract_signature_algorithm_hint(ctx)? {
+			return parse_signature_algorithm_hint(&hint);
+		}
+
+		detect_algorithm_from_public_key(public_key)
 	}
 }
 
@@ -326,6 +362,120 @@ impl AuthProvider for SignatureAuthProvider {
 		// Signature must be in request metadata, not in body
 		Err(AuthError::MissingSignature)
 	}
+
+	fn detect_algorithm(
+		&self,
+		ctx: &AuthContext,
+		public_key: &[u8],
+		_signature: &str,
+	) -> Result<SignatureAlgorithm, AuthError> {
+		// Prefer explicit algorithm hint in metadata.
+		if let Some(hint) = extract_signature_algorithm_hint(ctx)? {
+			return parse_signature_algorithm_hint(&hint);
+		}
+
+		// Fallback: determine from public key (deterministic).
+		//
+		// We intentionally do NOT guess based on signature length because
+		// Ed25519 and ECDSA (compact) can both be 64 bytes.
+		detect_algorithm_from_public_key(public_key)
+	}
+}
+
+fn extract_signature_algorithm_hint(ctx: &AuthContext) -> Result<Option<String>, AuthError> {
+	// HTTP header
+	if let Some(headers) = ctx.http_headers
+		&& let Some(alg_header) = headers.get("X-Signature-Alg")
+	{
+		let alg_str = alg_header
+			.to_str()
+			.map_err(|e| AuthError::InvalidSignatureAlgorithm(format!("Invalid header: {}", e)))?;
+		return Ok(Some(alg_str.to_string()));
+	}
+
+	// gRPC metadata
+	if let Some(metadata) = ctx.grpc_metadata
+		&& let Some(alg_val) = metadata.get("signature-alg")
+	{
+		let alg_str = alg_val.to_str().map_err(|e| {
+			AuthError::InvalidSignatureAlgorithm(format!("Invalid metadata: {}", e))
+		})?;
+		return Ok(Some(alg_str.to_string()));
+	}
+
+	Ok(None)
+}
+
+fn parse_signature_algorithm_hint(hint: &str) -> Result<SignatureAlgorithm, AuthError> {
+	let normalized = hint.trim().to_ascii_lowercase();
+	match normalized.as_str() {
+		"ed25519" => Ok(SignatureAlgorithm::Ed25519),
+		"ecdsa" | "secp256k1" => Ok(SignatureAlgorithm::Ecdsa),
+		other => Err(AuthError::InvalidSignatureAlgorithm(other.to_string())),
+	}
+}
+
+fn detect_algorithm_from_public_key(public_key: &[u8]) -> Result<SignatureAlgorithm, AuthError> {
+	// Deterministic heuristic based on well-known public key encodings:
+	// - Ed25519 verifying key bytes: 32
+	// - secp256k1 SEC1-encoded public key: 33 (compressed) or 65 (uncompressed)
+	match public_key.len() {
+		32 => Ok(SignatureAlgorithm::Ed25519),
+		33 | 65 => Ok(SignatureAlgorithm::Ecdsa),
+		_ => Err(AuthError::UnableToDetermineAlgorithm),
+	}
+}
+
+fn extract_timestamp(ctx: &AuthContext) -> Result<u64, AuthError> {
+	// HTTP header
+	if let Some(headers) = ctx.http_headers
+		&& let Some(ts_header) = headers.get("X-Timestamp")
+	{
+		let ts_str = ts_header
+			.to_str()
+			.map_err(|e| AuthError::InvalidTimestamp(format!("Invalid header: {}", e)))?;
+		return ts_str
+			.parse::<u64>()
+			.map_err(|e| AuthError::InvalidTimestamp(format!("Invalid u64: {}", e)));
+	}
+
+	// gRPC metadata
+	if let Some(metadata) = ctx.grpc_metadata
+		&& let Some(ts_val) = metadata.get("timestamp")
+	{
+		let ts_str = ts_val
+			.to_str()
+			.map_err(|e| AuthError::InvalidTimestamp(format!("Invalid metadata: {}", e)))?;
+		return ts_str
+			.parse::<u64>()
+			.map_err(|e| AuthError::InvalidTimestamp(format!("Invalid u64: {}", e)));
+	}
+
+	Err(AuthError::MissingTimestamp)
+}
+
+fn extract_nonce(ctx: &AuthContext) -> Result<String, AuthError> {
+	// HTTP header
+	if let Some(headers) = ctx.http_headers
+		&& let Some(nonce_header) = headers.get("X-Nonce")
+	{
+		return nonce_header
+			.to_str()
+			.map(|s| s.to_string())
+			.map_err(|e| AuthError::SignatureFormatError(format!("Invalid header: {}", e)));
+	}
+
+	// gRPC metadata
+	if let Some(metadata) = ctx.grpc_metadata
+		&& let Some(nonce_val) = metadata.get("nonce")
+	{
+		return nonce_val
+			.to_str()
+			.map(|s| s.to_string())
+			.map_err(|e| AuthError::SignatureFormatError(format!("Invalid metadata: {}", e)));
+	}
+
+	Err(AuthError::MissingNonce)
 }
 
 /// Authenticate an order request by verifying its signature
@@ -345,6 +495,8 @@ pub fn authenticate_order(
 	payload: &PlaceOrderRequest,
 	signature: &str,
 	principal: &Principal,
+	timestamp: u64,
+	nonce: &str,
 ) -> Result<(), AuthError> {
 	if signature.is_empty() {
 		return Err(AuthError::MissingSignature);
@@ -353,10 +505,10 @@ pub fn authenticate_order(
 	// Verify signature based on algorithm
 	match principal.scheme {
 		SignatureAlgorithm::Ed25519 => {
-			verify_ed25519_signature(payload, signature, &principal.public_key)
+			verify_ed25519_signature(payload, signature, &principal.public_key, timestamp, nonce)
 		}
 		SignatureAlgorithm::Ecdsa => {
-			verify_ecdsa_signature(payload, signature, &principal.public_key)
+			verify_ecdsa_signature(payload, signature, &principal.public_key, timestamp, nonce)
 		}
 	}
 }
@@ -375,7 +527,7 @@ pub fn authenticate_with_provider(
 	ctx: &AuthContext,
 	payload: &PlaceOrderRequest,
 	provider: &dyn AuthProvider,
-) -> Result<Principal, AuthError> {
+) -> Result<AuthenticatedPrincipal, AuthError> {
 	// Extract public key using provider
 	let public_key = provider.extract_public_key(ctx)?;
 
@@ -383,16 +535,24 @@ pub fn authenticate_with_provider(
 	let signature = provider.extract_signature(ctx)?;
 
 	// Detect algorithm using provider
-	let algorithm = provider.detect_algorithm(ctx)?;
+	let algorithm = provider.detect_algorithm(ctx, &public_key, &signature)?;
+
+	// Extract anti-replay metadata (must be in request metadata)
+	let timestamp = extract_timestamp(ctx)?;
+	let nonce = extract_nonce(ctx)?;
 
 	// Create principal
 	let principal = Principal::new(public_key, algorithm);
 
 	// Verify signature against payload
 	// Signature is extracted from metadata (header/metadata), not from payload body
-	authenticate_order(payload, &signature, &principal)?;
+	authenticate_order(payload, &signature, &principal, timestamp, &nonce)?;
 
-	Ok(principal)
+	Ok(AuthenticatedPrincipal {
+		principal,
+		timestamp,
+		nonce,
+	})
 }
 
 /// Verify Ed25519 signature
@@ -406,6 +566,8 @@ fn verify_ed25519_signature(
 	payload: &PlaceOrderRequest,
 	signature: &str,
 	public_key: &[u8],
+	timestamp: u64,
+	nonce: &str,
 ) -> Result<(), AuthError> {
 	// Parse verifying key
 	let verifying_key = VerifyingKey::from_bytes(
@@ -424,8 +586,8 @@ fn verify_ed25519_signature(
 			AuthError::SignatureFormatError("Invalid signature length".to_string())
 		})?);
 
-	// Serialize payload for signing (business data only, no authentication materials)
-	let message = serialize_for_signing(payload);
+	// Serialize payload for signing (business data only) + anti-replay metadata.
+	let message = serialize_for_signing(payload, timestamp, nonce);
 
 	// Verify signature
 	verifying_key
@@ -446,6 +608,8 @@ fn verify_ecdsa_signature(
 	payload: &PlaceOrderRequest,
 	signature: &str,
 	public_key: &[u8],
+	timestamp: u64,
+	nonce: &str,
 ) -> Result<(), AuthError> {
 	use k256::ecdsa::signature::Verifier;
 
@@ -471,8 +635,8 @@ fn verify_ecdsa_signature(
 			.map_err(|e| AuthError::SignatureFormatError(format!("Invalid DER signature: {}", e)))?
 	};
 
-	// Serialize payload for signing (business data only, no authentication materials)
-	let message = serialize_for_signing(payload);
+	// Serialize payload for signing (business data only) + anti-replay metadata.
+	let message = serialize_for_signing(payload, timestamp, nonce);
 
 	// Hash message
 	let message_hash = Sha256::digest(&message);
@@ -490,13 +654,16 @@ fn verify_ecdsa_signature(
 /// This function creates a canonical representation of the business payload
 /// for signature generation and verification.
 ///
-/// **Protocol Requirement**: Only business data is serialized. Authentication
-/// materials (signature, public key) are NOT included in the serialized message,
-/// as they are transmitted in request metadata (headers/metadata), not in the payload.
-fn serialize_for_signing(request: &PlaceOrderRequest) -> Vec<u8> {
-	// Create a canonical representation for signing
-	// This should match the client's signing format
-	// Note: Only business data is serialized, authentication materials are excluded
+/// **Protocol Requirement**:
+/// - Business data is serialized from the request payload (`PlaceOrderRequest`)
+/// - Anti-replay metadata (`timestamp`, `nonce`) is serialized from request metadata
+/// - Authentication materials (signature, public key) are NOT included
+fn serialize_for_signing(request: &PlaceOrderRequest, timestamp: u64, nonce: &str) -> Vec<u8> {
+	// Canonical signing message:
+	// - include business data from payload
+	// - include (timestamp, nonce) from metadata to enable replay protection
+	//
+	// This must match the client's signing format exactly.
 	let mut message = Vec::new();
 	message.extend_from_slice(request.market.as_bytes());
 	message.push(0);
@@ -515,5 +682,12 @@ fn serialize_for_signing(request: &PlaceOrderRequest) -> Vec<u8> {
 	if let Some(ref client_order_id) = request.client_order_id {
 		message.extend_from_slice(client_order_id.as_bytes());
 	}
+
+	// Separator before metadata fields
+	message.push(0);
+	message.extend_from_slice(&timestamp.to_be_bytes());
+	message.push(0);
+	message.extend_from_slice(nonce.as_bytes());
+
 	message
 }

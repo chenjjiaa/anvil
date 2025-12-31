@@ -19,6 +19,7 @@ use anyhow::Context;
 
 use crate::{
 	auth::{AuthProvider, SignatureAuthProvider},
+	config::DEFAULT_MAX_BODY_BYTES,
 	dispatcher::MatchingDispatcher,
 	middleware::{CorsMiddleware, LoggingMiddleware},
 	routes,
@@ -69,16 +70,31 @@ impl GatewayServer {
 			.and_then(|w| w.parse().ok())
 			.unwrap_or_else(num_cpus::get);
 
+		// Maximum request body size for JSON payloads.
+		// This is a protocol-level anti-abuse control (not business logic).
+		let max_body_bytes = std::env::var("GATEWAY_MAX_BODY_BYTES")
+			.map(|v| {
+				v.parse::<usize>()
+					.expect("GATEWAY_MAX_BODY_BYTES must be a valid usize")
+			})
+			.unwrap_or(DEFAULT_MAX_BODY_BYTES);
+
 		tracing::info!(
 			target: "server::server",
 			"Starting HTTP server on {} with {} workers",
 			addr,
 			workers
 		);
+		tracing::info!(
+			target: "server::server",
+			"HTTP max JSON body size: {} bytes",
+			max_body_bytes
+		);
 
 		HttpServer::new(move || {
 			App::new()
 				.app_data(web::Data::new(state.clone()))
+				.app_data(web::JsonConfig::default().limit(max_body_bytes))
 				.wrap(CorsMiddleware)
 				.wrap(LoggingMiddleware)
 				.configure(routes::configure_routes)

@@ -42,14 +42,28 @@ impl actix_web::ResponseError for GatewayError {
 	fn error_response(&self) -> HttpResponse {
 		let status = match self {
 			GatewayError::Auth(_) => actix_web::http::StatusCode::UNAUTHORIZED,
+			GatewayError::Admission(AdmissionError::RateLimitExceeded) => {
+				actix_web::http::StatusCode::TOO_MANY_REQUESTS
+			}
 			GatewayError::Admission(_) => actix_web::http::StatusCode::BAD_REQUEST,
+			GatewayError::Dispatching(DispatcherError::MatchingTimeout) => {
+				actix_web::http::StatusCode::ACCEPTED
+			}
 			GatewayError::Dispatching(_) => actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
 			GatewayError::Internal(_) => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
-		HttpResponse::build(status).json(serde_json::json!({
-			"error": self.to_string()
-		}))
+		match self {
+			GatewayError::Dispatching(DispatcherError::MatchingTimeout) => HttpResponse::build(status)
+				.json(serde_json::json!({
+					"error": "Order may have been accepted by the matching engine, but confirmation was not received within the gateway timeout. Do not blind-retry.",
+					"code": "UNCONFIRMED",
+					"reason": "MATCHING_TIMEOUT",
+				})),
+			_ => HttpResponse::build(status).json(serde_json::json!({
+				"error": self.to_string()
+			})),
+		}
 	}
 }
 
@@ -89,14 +103,19 @@ pub async fn place_order(
 	// Extract principal using AuthProvider
 	// This extracts the public key and signature from headers/metadata,
 	// creates a Principal, and verifies the signature against the order payload
-	let principal =
+	let authenticated =
 		auth::authenticate_with_provider(&auth_ctx, &request, state.auth_provider.as_ref())
 			.map_err(GatewayError::Auth)?;
+	let principal = authenticated.principal;
 
 	// Check rate limit by principal (public key)
 	// Gateway only performs rate limiting at the cryptographic principal level,
 	// not at the business user level.
 	admission::check_rate_limit(&principal)?;
+
+	// Best-effort replay protection (timestamp + nonce).
+	// This is protocol-level anti-abuse and does not introduce any business identity.
+	admission::check_replay(&principal, authenticated.timestamp, &authenticated.nonce)?;
 
 	// Validate and admit the order (protocol-level checks)
 	admission::validate_and_admit(&request)?;

@@ -37,4 +37,5 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 governor = "^0.10"
 dashmap = { workspace = true }
+moka = { workspace = true }
 lazy_static = "^1"
