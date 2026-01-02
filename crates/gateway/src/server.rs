@@ -60,10 +60,12 @@ impl GatewayServer {
 		})
 	}
 
-	/// Start the HTTP server with actix-web
-	pub async fn serve(&self, addr: SocketAddr) -> anyhow::Result<()> {
-		let state = self.state.clone();
-
+	/// Load server configuration from environment variables
+	///
+	/// Returns a tuple of (workers, max_body_bytes):
+	/// - `workers`: Number of worker threads (default: CPU count)
+	/// - `max_body_bytes`: Maximum HTTP request body size in bytes (default: DEFAULT_MAX_BODY_BYTES)
+	fn load_server_config() -> (usize, usize) {
 		// Get number of workers from environment or use CPU count
 		let workers = std::env::var("GATEWAY_WORKERS")
 			.ok()
@@ -78,6 +80,15 @@ impl GatewayServer {
 					.expect("GATEWAY_MAX_BODY_BYTES must be a valid usize")
 			})
 			.unwrap_or(DEFAULT_MAX_BODY_BYTES);
+
+		(workers, max_body_bytes)
+	}
+
+	/// Start the HTTP server with actix-web
+	pub async fn serve(&self, addr: SocketAddr) -> anyhow::Result<()> {
+		let state = self.state.clone();
+
+		let (workers, max_body_bytes) = Self::load_server_config();
 
 		tracing::info!(
 			target: "server::server",
