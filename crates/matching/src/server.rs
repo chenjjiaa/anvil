@@ -17,9 +17,12 @@
 use crate::Matcher;
 use crate::types::Order;
 use anvil_sdk::types::Side;
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // Include generated gRPC code
 pub mod proto {
@@ -30,7 +33,7 @@ use proto::matching_service_server::{MatchingService, MatchingServiceServer};
 use proto::{
 	CancelOrderRequest, CancelOrderResponse, GetOrderRequest, GetOrderResponse, MatchedTrade,
 	OrderSide as ProtoOrderSide, OrderStatus as ProtoOrderStatus, StreamMatchedTradesRequest,
-	SubmitOrderRequest, SubmitOrderResponse, Trade as ProtoTrade,
+	SubmitDisposition, SubmitOrderRequest, SubmitOrderResponse, Trade as ProtoTrade,
 };
 use tokio_stream;
 
@@ -51,6 +54,10 @@ impl MatchingService for MatchingServiceImpl {
 		&self,
 		request: Request<SubmitOrderRequest>,
 	) -> Result<Response<SubmitOrderResponse>, Status> {
+		let parent_cx =
+			TraceContextPropagator::new().extract(&MetadataExtractor(request.metadata()));
+		tracing::Span::current().set_parent(parent_cx);
+
 		let req = request.into_inner();
 
 		// Convert proto order to internal order
@@ -70,15 +77,22 @@ impl MatchingService for MatchingServiceImpl {
 
 		// Submit to matcher
 		let matcher = self.matcher.read().await;
-		let result = matcher
-			.match_order(order)
-			.map_err(|e| Status::internal(format!("Matching error: {}", e)))?;
+		let result = matcher.match_order(order);
 
-		// Send matched trades to settlement if any
-		if !result.trades.is_empty() {
-			// TODO: Send to settlement via gRPC client
-			// This would be done asynchronously to not block the response
-		}
+		let result = match result {
+			Ok(result) => result,
+			Err(e) => {
+				return Ok(Response::new(SubmitOrderResponse {
+					order_id: req.order_id,
+					status: ProtoOrderStatus::Rejected as i32,
+					trades: Vec::new(),
+					fully_filled: false,
+					partially_filled: false,
+					disposition: SubmitDisposition::InvalidOrder as i32,
+					reason: e.to_string(),
+				}));
+			}
+		};
 
 		// Convert trades to proto
 		let proto_trades: Vec<ProtoTrade> = result
@@ -114,6 +128,8 @@ impl MatchingService for MatchingServiceImpl {
 			trades: proto_trades,
 			fully_filled: result.fully_filled,
 			partially_filled: result.partially_filled,
+			disposition: SubmitDisposition::AcceptedOk as i32,
+			reason: String::new(),
 		}))
 	}
 
@@ -165,4 +181,16 @@ impl MatchingService for MatchingServiceImpl {
 /// Create matching service server
 pub fn create_server(matcher: Arc<RwLock<Matcher>>) -> MatchingServiceServer<MatchingServiceImpl> {
 	MatchingServiceServer::new(MatchingServiceImpl::new(matcher))
+}
+
+struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+impl<'a> Extractor for MetadataExtractor<'a> {
+	fn get(&self, key: &str) -> Option<&str> {
+		self.0.get(key).and_then(|v| v.to_str().ok())
+	}
+
+	fn keys(&self) -> Vec<&str> {
+		Vec::new()
+	}
 }

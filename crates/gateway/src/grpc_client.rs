@@ -27,9 +27,12 @@ use proto::{
 	SubmitOrderResponse, matching_service_client::MatchingServiceClient,
 };
 use thiserror::Error;
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+	metadata::MetadataValue,
+	transport::{Channel, Endpoint},
+};
 
-use crate::config::DEFAULT_MATCHING_RPC_TIMEOUT_MS;
+use crate::request_context::RequestContext;
 
 /// Error types for gRPC client operations
 #[derive(Debug, Error)]
@@ -54,14 +57,7 @@ pub struct MatchingGrpcClient {
 
 impl MatchingGrpcClient {
 	/// Create a new gRPC client
-	pub async fn new(endpoint: &str) -> Result<Self, GrpcClientError> {
-		let rpc_timeout_ms = std::env::var("GATEWAY_MATCHING_RPC_TIMEOUT_MS")
-			.map(|v| {
-				v.parse::<u64>()
-					.expect("GATEWAY_MATCHING_RPC_TIMEOUT_MS must be a valid u64")
-			})
-			.unwrap_or(DEFAULT_MATCHING_RPC_TIMEOUT_MS);
-
+	pub async fn new(endpoint: &str, rpc_timeout: Duration) -> Result<Self, GrpcClientError> {
 		let channel = Endpoint::from_shared(endpoint.to_string())
 			.map_err(|e| GrpcClientError::Transport(format!("Invalid endpoint: {}", e)))?
 			.timeout(Duration::from_secs(5))
@@ -71,14 +67,40 @@ impl MatchingGrpcClient {
 
 		Ok(Self {
 			client: MatchingServiceClient::new(channel),
-			rpc_timeout: Duration::from_millis(rpc_timeout_ms),
+			rpc_timeout,
 		})
 	}
 
 	/// Submit an order to the matching engine
+	///
+	/// This function sends an order submission request to the matching engine via gRPC.
+	/// It propagates tracing context from the request context to enable distributed
+	/// tracing across service boundaries.
+	///
+	/// # Tracing Context Propagation
+	///
+	/// The function propagates tracing information via gRPC metadata:
+	///
+	/// - **W3C Trace Context**: `traceparent` and `tracestate` headers (if present)
+	///   are propagated as gRPC metadata keys `traceparent` and `tracestate`.
+	///   This enables the matching engine to extract OpenTelemetry trace context.
+	///
+	/// - **Legacy headers**: `request-id` and `trace-id` are also propagated for
+	///   backward compatibility and log correlation.
+	///
+	/// # Arguments
+	///
+	/// * `order` - The order to submit to the matching engine
+	/// * `ctx` - Request context containing tracing and request identification information
+	///
+	/// # Returns
+	///
+	/// Returns `Ok(SubmitOrderResponse)` if the order was successfully submitted,
+	/// or `Err(GrpcClientError)` if the request failed or timed out.
 	pub async fn submit_order(
 		&mut self,
 		order: anvil_matching::types::Order,
+		ctx: &RequestContext,
 	) -> Result<SubmitOrderResponse, GrpcClientError> {
 		let request = SubmitOrderRequest {
 			order_id: order.order_id.clone(),
@@ -96,6 +118,28 @@ impl MatchingGrpcClient {
 
 		let mut req = tonic::Request::new(request);
 		req.set_timeout(self.rpc_timeout);
+		let metadata = req.metadata_mut();
+
+		// Propagate W3C Trace Context headers as gRPC metadata
+		// The matching engine will extract these to link spans to the upstream trace
+		if let Some(tp) = &ctx.traceparent
+			&& let Ok(value) = MetadataValue::try_from(tp.as_str())
+		{
+			metadata.insert("traceparent", value);
+		}
+		if let Some(ts) = &ctx.tracestate
+			&& let Ok(value) = MetadataValue::try_from(ts.as_str())
+		{
+			metadata.insert("tracestate", value);
+		}
+
+		// Propagate legacy headers for backward compatibility and log correlation
+		if let Ok(value) = MetadataValue::try_from(ctx.request_id.as_str()) {
+			metadata.insert("request-id", value);
+		}
+		if let Ok(value) = MetadataValue::try_from(ctx.trace_id.as_str()) {
+			metadata.insert("trace-id", value);
+		}
 
 		let response = self
 			.client

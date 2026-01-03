@@ -37,7 +37,7 @@ use std::{
 	num::NonZeroU32,
 	sync::{
 		Arc,
-		atomic::{AtomicU64, Ordering},
+		atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 	},
 	time::{Duration, Instant},
 };
@@ -192,6 +192,74 @@ impl AdmissionController {
 /// Global admission controller instance
 static ADMISSION_CONTROLLER: std::sync::OnceLock<AdmissionController> = std::sync::OnceLock::new();
 
+#[derive(Debug, Clone, Copy)]
+pub enum ReplayOutcome {
+	RetryableFailure,
+	Terminal,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReplayState {
+	InFlight = 0,
+	RetryableReady = 1,
+	Terminal = 2,
+}
+
+impl ReplayState {
+	fn from_u8(value: u8) -> Self {
+		match value {
+			1 => ReplayState::RetryableReady,
+			2 => ReplayState::Terminal,
+			_ => ReplayState::InFlight,
+		}
+	}
+}
+
+#[derive(Debug)]
+struct ReplayEntry {
+	state: AtomicU8,
+	retry_consumed: AtomicBool,
+	token: AtomicU64,
+}
+
+impl ReplayEntry {
+	fn new(token: u64) -> Self {
+		Self {
+			state: AtomicU8::new(ReplayState::InFlight as u8),
+			retry_consumed: AtomicBool::new(false),
+			token: AtomicU64::new(token),
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayGuard {
+	entry: Arc<ReplayEntry>,
+}
+
+impl ReplayGuard {
+	pub fn finish(self, outcome: ReplayOutcome) {
+		match outcome {
+			ReplayOutcome::RetryableFailure => {
+				if self.entry.retry_consumed.load(Ordering::SeqCst) {
+					self.entry
+						.state
+						.store(ReplayState::Terminal as u8, Ordering::SeqCst);
+				} else {
+					self.entry
+						.state
+						.store(ReplayState::RetryableReady as u8, Ordering::SeqCst);
+				}
+			}
+			ReplayOutcome::Terminal => {
+				self.entry
+					.state
+					.store(ReplayState::Terminal as u8, Ordering::SeqCst);
+			}
+		}
+	}
+}
+
 /// Best-effort replay cache (per gateway instance, short-lived).
 ///
 /// Keyed by `(principal_id, nonce)` tuple with a TTL. This is NOT meant to provide
@@ -206,18 +274,13 @@ static ADMISSION_CONTROLLER: std::sync::OnceLock<AdmissionController> = std::syn
 /// The cache is intended as a best-effort, short-lived admission control mechanism
 /// at the gateway layer, not as a source of global idempotency.
 struct ReplayCache {
-	/// Moka cache with structured key `(principal_id, nonce)` and empty value `()`
-	/// The cache automatically handles expiration and eviction.
-	///
-	/// Value is a per-insert token used to detect whether this call created the entry.
-	cache: Cache<(String, String), u64>,
+	cache: Cache<(String, String), Arc<ReplayEntry>>,
 	replay_window_secs: u64,
 	next_token: AtomicU64,
 }
 
 impl ReplayCache {
 	fn new(replay_window_secs: u64, nonce_ttl_secs: u64, max_capacity: u64) -> Self {
-		// Build moka cache with bounded capacity and TTL-based expiration
 		let cache = Cache::builder()
 			.max_capacity(max_capacity)
 			.time_to_live(Duration::from_secs(nonce_ttl_secs))
@@ -244,33 +307,43 @@ impl ReplayCache {
 		Ok(())
 	}
 
-	/// Check if a (principal_id, nonce) pair exists and insert if not.
-	///
-	/// This collapses "check + insert" into a single concurrent operation using
-	/// moka's `get_with` API and a per-call token:
-	///
-	/// - Each call generates a unique `token`
-	/// - `get_with(key, || token)` inserts `token` exactly once if the key is missing
-	/// - If the returned value equals our `token`, we created the entry (first-seen)
-	/// - Otherwise, another call already created it => replay
-	///
-	/// This avoids the `contains_key + insert` race window (TOCTOU) and is suitable
-	/// for gateway-layer replay protection.
-	///
-	/// Note: token collisions would cause false-negatives, but we use a monotonically
-	/// increasing `AtomicU64`, making collisions practically impossible within the TTL window.
-	///
-	/// Returns `Err(ReplayDetected)` if the key already exists in the cache.
-	fn check_and_insert(&self, principal_id: &str, nonce: &str) -> Result<(), AdmissionError> {
+	fn begin(
+		&self,
+		principal_id: &str,
+		timestamp: u64,
+		nonce: &str,
+	) -> Result<ReplayGuard, AdmissionError> {
+		self.check_timestamp(timestamp)?;
 		let key = (principal_id.to_string(), nonce.to_string());
 		let token = self.next_token.fetch_add(1, Ordering::Relaxed);
 
-		let stored = self.cache.get_with(key, || token);
-		if stored != token {
-			return Err(AdmissionError::ReplayDetected);
+		let entry = self
+			.cache
+			.get_with(key, || Arc::new(ReplayEntry::new(token)));
+
+		// If we created the entry, allow immediately.
+		if entry.token.load(Ordering::Relaxed) == token {
+			return Ok(ReplayGuard { entry });
 		}
 
-		Ok(())
+		let state = ReplayState::from_u8(entry.state.load(Ordering::SeqCst));
+
+		match state {
+			ReplayState::InFlight => Err(AdmissionError::ReplayDetected),
+			ReplayState::Terminal => Err(AdmissionError::ReplayDetected),
+			ReplayState::RetryableReady => {
+				// Allow a single retry after a retryable failure.
+				let already_used = entry.retry_consumed.swap(true, Ordering::SeqCst);
+				if already_used {
+					Err(AdmissionError::ReplayDetected)
+				} else {
+					entry
+						.state
+						.store(ReplayState::InFlight as u8, Ordering::SeqCst);
+					Ok(ReplayGuard { entry })
+				}
+			}
+		}
 	}
 }
 
@@ -375,18 +448,19 @@ pub fn check_rate_limit(principal: &Principal) -> Result<(), AdmissionError> {
 	get_admission_controller().check_rate_limit(principal)
 }
 
-/// Best-effort replay protection (timestamp + nonce).
+/// Begin replay tracking for `(principal, nonce)`.
 ///
-/// - `timestamp`: unix seconds (UTC), extracted from request metadata
-/// - `nonce`: opaque string, extracted from request metadata
-pub fn check_replay(
+/// This records the request as in-flight. If the nonce is already in-flight or
+/// terminal, it returns `ReplayDetected`. If the previous attempt ended with a
+/// retryable failure and the retry has not been consumed yet, it will allow one
+/// more attempt and mark it as in-flight again.
+pub fn begin_replay(
 	principal: &Principal,
 	timestamp: u64,
 	nonce: &str,
-) -> Result<(), AdmissionError> {
+) -> Result<ReplayGuard, AdmissionError> {
 	let cache = get_replay_cache();
-	cache.check_timestamp(timestamp)?;
-	cache.check_and_insert(&principal.id(), nonce)
+	cache.begin(&principal.id(), timestamp, nonce)
 }
 
 /// Check balance (async)
@@ -398,4 +472,59 @@ pub async fn check_balance(market: &str, required: u64) -> Result<(), AdmissionE
 	get_admission_controller()
 		.check_balance(market, required)
 		.await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::auth::{Principal, SignatureAlgorithm};
+
+	fn principal() -> Principal {
+		Principal::new(vec![0u8; 32], SignatureAlgorithm::Ed25519)
+	}
+
+	fn now_secs() -> u64 {
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs()
+	}
+
+	#[test]
+	fn replay_rejects_duplicate_inflight() {
+		let cache = ReplayCache::new(30, 60, 100);
+		let principal = principal();
+
+		let guard = cache
+			.begin(&principal.id(), now_secs(), "nonce-1")
+			.expect("first attempt allowed");
+		assert!(cache.begin(&principal.id(), now_secs(), "nonce-1").is_err());
+
+		guard.finish(ReplayOutcome::Terminal);
+		assert!(matches!(
+			cache.begin(&principal.id(), now_secs(), "nonce-1"),
+			Err(AdmissionError::ReplayDetected)
+		));
+	}
+
+	#[test]
+	fn replay_allows_single_retry_after_retryable_failure() {
+		let cache = ReplayCache::new(30, 60, 100);
+		let principal = principal();
+
+		let guard1 = cache
+			.begin(&principal.id(), now_secs(), "nonce-2")
+			.expect("first attempt allowed");
+		guard1.finish(ReplayOutcome::RetryableFailure);
+
+		let guard2 = cache
+			.begin(&principal.id(), now_secs(), "nonce-2")
+			.expect("retry allowed");
+		guard2.finish(ReplayOutcome::RetryableFailure);
+
+		assert!(matches!(
+			cache.begin(&principal.id(), now_secs(), "nonce-2"),
+			Err(AdmissionError::ReplayDetected)
+		));
+	}
 }

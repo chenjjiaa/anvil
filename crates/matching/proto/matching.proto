@@ -52,6 +52,8 @@ message SubmitOrderResponse {
   repeated Trade trades = 3;
   bool fully_filled = 4;
   bool partially_filled = 5;
+  SubmitDisposition disposition = 6;
+  string reason = 7;
 }
 
 // Order query request
@@ -129,3 +131,10 @@ enum OrderStatus {
   REJECTED = 5;
 }
 
+enum SubmitDisposition {
+  ACCEPTED_OK = 0;
+  REJECTED_ORDER = 1;
+  OVERLOADED_ENGINE = 2;
+  INVALID_ORDER = 3;
+  INTERNAL_ERROR = 4;
+}

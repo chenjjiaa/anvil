@@ -23,6 +23,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
+tracing-opentelemetry = "^0.22"
 num_cpus = "^1"
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
@@ -38,4 +39,7 @@ hex = { workspace = true }
 governor = "^0.10"
 dashmap = { workspace = true }
 moka = { workspace = true }
+opentelemetry = { version = "^0.21", features = ["trace"] }
+opentelemetry_sdk = { version = "^0.21", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "^0.14", features = ["trace", "grpc-tonic"] }
 lazy_static = "^1"

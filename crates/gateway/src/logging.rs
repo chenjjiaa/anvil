@@ -38,8 +38,8 @@
 //! # Log File Format
 //!
 //! - Directory: `{LOG_DIR}/gateway/`
-//! - Rotation: one file per day (UTC) using `tracing_appender::rolling::daily`
-//! - Filename: managed by `tracing-appender` rolling appender (date-suffixed)
+//! - Rotation: one file per day (UTC) using `tracing_appender::rolling::RollingFileAppender`
+//! - Filename: `{component}.{date}.log` format (e.g., `gateway.2026-01-03.log`)
 //! - Format: UTC timestamp, thread ID, log level, module path, message
 //! - ANSI colors: Disabled in file output (enabled in console if `LOG_TO_CONSOLE=true`)
 
@@ -47,12 +47,16 @@ use std::{env, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use tracing::info;
-use tracing_appender::{non_blocking, rolling};
+use tracing_appender::{
+	non_blocking,
+	rolling::{self, Rotation},
+};
 use tracing_subscriber::{
 	EnvFilter, fmt, layer::SubscriberExt, registry::Registry, util::SubscriberInitExt,
 };
 
 use crate::config::{DEFAULT_LOG_LEVEL, DEFAULT_LOG_TO_CONSOLE, LOG_COMPONENT_NAME};
+use crate::otel;
 
 // Store log guard to prevent log loss on program exit
 static LOG_GUARD: OnceLock<non_blocking::WorkerGuard> = OnceLock::new();
@@ -126,12 +130,29 @@ fn get_log_root() -> String {
 ///
 /// `tracing-appender` handles the rotation, so long-running processes will
 /// automatically switch files when the date changes.
+///
+/// Uses `RollingFileAppender::builder()` to configure a daily rolling appender
+/// with `.log` suffix. This creates files in the format `{prefix}.{date}.log`,
+/// e.g., `gateway.2026-01-03.log`.
 fn setup_file_logging(log_dir: &Path) -> Result<non_blocking::NonBlocking> {
 	// Daily rolling file appender in {LOG_DIR}/{component_name}/
 	//
-	// Note: the rolling appender controls the exact filename on disk. We only
-	// provide the base filename here.
-	let file_appender = rolling::daily(log_dir, format!("{}.log", LOG_COMPONENT_NAME));
+	// Use Builder API to configure filename prefix and suffix:
+	// - prefix: component name (e.g., "gateway")
+	// - suffix: ".log"
+	// - rotation: daily
+	// This creates files like "gateway.2026-01-03.log"
+	let file_appender = rolling::RollingFileAppender::builder()
+		.rotation(Rotation::DAILY)
+		.filename_prefix(LOG_COMPONENT_NAME.to_string())
+		.filename_suffix(".log")
+		.build(log_dir)
+		.with_context(|| {
+			format!(
+				"Failed to create rolling file appender in {}",
+				log_dir.display()
+			)
+		})?;
 
 	// Create non-blocking writer
 	let (file_writer, guard) = non_blocking(file_appender);
@@ -176,36 +197,72 @@ pub fn init_logging() -> Result<()> {
 		.map(|v| v == "true" || v == "1" || v == "yes")
 		.unwrap_or(DEFAULT_LOG_TO_CONSOLE);
 
-	// Initialize tracing filter
+	// Initialize tracing filter from environment or default
 	let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
 
-	// Create file layer (always enabled, no ANSI colors)
-	let file_layer = fmt::layer()
-		.with_writer(file_writer)
-		.with_timer(fmt::time::UtcTime::rfc_3339())
-		.with_thread_ids(true)
-		.with_target(true)
-		.with_thread_names(false)
-		.with_ansi(false); // Disable ANSI colors for file output
+	// Initialize OpenTelemetry tracer for distributed tracing
+	// If OTLP endpoint is configured, traces are exported to external backend
+	// Otherwise, traces are available locally via the tracing layer
+	let otel_tracer = otel::init_tracer()?;
 
-	// Initialize subscriber with file layer and optionally console layer
-	if log_to_console {
-		// Console layer (with ANSI colors)
-		let console_layer = fmt::layer()
-			.with_writer(std::io::stderr)
-			.with_timer(fmt::time::UtcTime::rfc_3339())
-			.with_thread_ids(true)
-			.with_target(true)
-			.with_thread_names(false)
-			.with_ansi(true);
+	if let Some(tracer) = otel_tracer {
+		// Build subscriber with OpenTelemetry layer for distributed tracing
+		// The OTel layer extracts trace context from spans and exports to OTLP (if configured)
+		let subscriber = Registry::default()
+			.with(filter.clone())
+			.with(tracing_opentelemetry::layer().with_tracer(tracer));
 
-		Registry::default()
-			.with(filter)
-			.with(file_layer)
-			.with(console_layer)
-			.init();
+		let subscriber = subscriber.with(
+			fmt::layer()
+				.with_writer(file_writer)
+				.with_timer(fmt::time::UtcTime::rfc_3339())
+				.with_thread_ids(true)
+				.with_target(true)
+				.with_thread_names(false)
+				.with_ansi(false), // Disable ANSI colors for file output
+		);
+
+		if log_to_console {
+			let subscriber = subscriber.with(
+				fmt::layer()
+					.with_writer(std::io::stderr)
+					.with_timer(fmt::time::UtcTime::rfc_3339())
+					.with_thread_ids(true)
+					.with_target(true)
+					.with_thread_names(false)
+					.with_ansi(true),
+			);
+			subscriber.init();
+		} else {
+			subscriber.init();
+		}
 	} else {
-		Registry::default().with(filter).with(file_layer).init();
+		let subscriber = Registry::default().with(filter);
+
+		let subscriber = subscriber.with(
+			fmt::layer()
+				.with_writer(file_writer)
+				.with_timer(fmt::time::UtcTime::rfc_3339())
+				.with_thread_ids(true)
+				.with_target(true)
+				.with_thread_names(false)
+				.with_ansi(false),
+		);
+
+		if log_to_console {
+			let subscriber = subscriber.with(
+				fmt::layer()
+					.with_writer(std::io::stderr)
+					.with_timer(fmt::time::UtcTime::rfc_3339())
+					.with_thread_ids(true)
+					.with_target(true)
+					.with_thread_names(false)
+					.with_ansi(true),
+			);
+			subscriber.init();
+		} else {
+			subscriber.init();
+		}
 	}
 
 	// Log initialization info
@@ -213,7 +270,7 @@ pub fn init_logging() -> Result<()> {
 	info!(target: "server", "Log directory: {}", log_dir.display());
 	info!(
 		target: "server",
-		"Log file base name: {}.log (daily rolling)",
+		"Log file base name: {}.YYYY-MM-DD.log (daily rolling)",
 		LOG_COMPONENT_NAME
 	);
 	if log_to_console {

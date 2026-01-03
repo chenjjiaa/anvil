@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use actix_web::{App, HttpServer, web};
 use anyhow::Context;
 
 use crate::{
 	auth::{AuthProvider, SignatureAuthProvider},
-	config::DEFAULT_MAX_BODY_BYTES,
+	config::GatewayRuntimeConfig,
 	dispatcher::MatchingDispatcher,
 	middleware::{CorsMiddleware, LoggingMiddleware},
 	routes,
@@ -41,6 +41,7 @@ pub struct GatewayState {
 /// Gateway server
 pub struct GatewayServer {
 	state: GatewayState,
+	config: GatewayRuntimeConfig,
 }
 
 impl GatewayServer {
@@ -49,14 +50,15 @@ impl GatewayServer {
 	/// Uses the default SignatureAuthProvider for authentication.
 	/// Production systems should create their own AuthProvider implementation
 	/// and pass it to GatewayState.
-	pub async fn new() -> anyhow::Result<Self> {
-		let dispatcher = Arc::new(MatchingDispatcher::new());
+	pub async fn new(config: GatewayRuntimeConfig) -> anyhow::Result<Self> {
+		let dispatcher = Arc::new(MatchingDispatcher::new(&config).await?);
 		let auth_provider: Arc<dyn AuthProvider> = Arc::new(SignatureAuthProvider);
 		Ok(Self {
 			state: GatewayState {
 				dispatcher,
 				auth_provider,
 			},
+			config,
 		})
 	}
 
@@ -65,30 +67,18 @@ impl GatewayServer {
 	/// Returns a tuple of (workers, max_body_bytes):
 	/// - `workers`: Number of worker threads (default: CPU count)
 	/// - `max_body_bytes`: Maximum HTTP request body size in bytes (default: DEFAULT_MAX_BODY_BYTES)
-	fn load_server_config() -> (usize, usize) {
-		// Get number of workers from environment or use CPU count
-		let workers = std::env::var("GATEWAY_WORKERS")
-			.ok()
-			.and_then(|w| w.parse().ok())
-			.unwrap_or_else(num_cpus::get);
-
-		// Maximum request body size for JSON payloads.
-		// This is a protocol-level anti-abuse control (not business logic).
-		let max_body_bytes = std::env::var("GATEWAY_MAX_BODY_BYTES")
-			.map(|v| {
-				v.parse::<usize>()
-					.expect("GATEWAY_MAX_BODY_BYTES must be a valid usize")
-			})
-			.unwrap_or(DEFAULT_MAX_BODY_BYTES);
-
+	fn load_server_config(&self) -> (usize, usize) {
+		let workers = self.config.workers;
+		let max_body_bytes = self.config.max_body_bytes;
 		(workers, max_body_bytes)
 	}
 
 	/// Start the HTTP server with actix-web
-	pub async fn serve(&self, addr: SocketAddr) -> anyhow::Result<()> {
+	pub async fn serve(&self) -> anyhow::Result<()> {
 		let state = self.state.clone();
 
-		let (workers, max_body_bytes) = Self::load_server_config();
+		let (workers, max_body_bytes) = self.load_server_config();
+		let addr = self.config.bind_addr;
 
 		tracing::info!(
 			target: "server::server",

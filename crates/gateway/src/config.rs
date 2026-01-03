@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, env, net::SocketAddr};
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 // Logging configuration constants
@@ -52,6 +53,79 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Default matching-engine RPC timeout in milliseconds (can be overridden by GATEWAY_MATCHING_RPC_TIMEOUT_MS)
 pub const DEFAULT_MATCHING_RPC_TIMEOUT_MS: u64 = 1_500;
+
+/// Default dispatch queue capacity for the matching dispatcher
+pub const DEFAULT_DISPATCH_QUEUE_CAPACITY: usize = 1_024;
+
+/// Default dispatch queue timeout (ms) while waiting in bounded queue
+pub const DEFAULT_DISPATCH_QUEUE_TIMEOUT_MS: u64 = 1_000;
+
+#[derive(Debug, Clone)]
+pub struct GatewayRuntimeConfig {
+	pub bind_addr: SocketAddr,
+	pub workers: usize,
+	pub max_body_bytes: usize,
+	pub matching_engines: HashMap<String, String>,
+	pub dispatch_queue_capacity: usize,
+	pub dispatch_queue_timeout_ms: u64,
+	pub matching_rpc_timeout_ms: u64,
+}
+
+impl GatewayRuntimeConfig {
+	pub fn from_env() -> Result<Self> {
+		dotenv::dotenv().ok();
+
+		let bind_addr_str =
+			env::var("GATEWAY_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
+		let bind_addr = bind_addr_str
+			.parse()
+			.with_context(|| format!("Invalid bind address: {}", bind_addr_str))?;
+
+		let workers = env::var("GATEWAY_WORKERS")
+			.ok()
+			.and_then(|w| w.parse().ok())
+			.unwrap_or_else(num_cpus::get);
+
+		let max_body_bytes = env::var("GATEWAY_MAX_BODY_BYTES")
+			.ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(DEFAULT_MAX_BODY_BYTES);
+
+		let matching_rpc_timeout_ms = env::var("GATEWAY_MATCHING_RPC_TIMEOUT_MS")
+			.ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(DEFAULT_MATCHING_RPC_TIMEOUT_MS);
+
+		let dispatch_queue_capacity = env::var("GATEWAY_DISPATCH_QUEUE_CAPACITY")
+			.ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(DEFAULT_DISPATCH_QUEUE_CAPACITY);
+
+		let dispatch_queue_timeout_ms = env::var("GATEWAY_DISPATCH_QUEUE_TIMEOUT_MS")
+			.ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(DEFAULT_DISPATCH_QUEUE_TIMEOUT_MS);
+
+		let matching_engines = default_matching_engines();
+
+		Ok(Self {
+			bind_addr,
+			workers,
+			max_body_bytes,
+			matching_engines,
+			dispatch_queue_capacity,
+			dispatch_queue_timeout_ms,
+			matching_rpc_timeout_ms,
+		})
+	}
+}
+
+fn default_matching_engines() -> HashMap<String, String> {
+	let mut map = HashMap::new();
+	// TODO: Load from configuration file or service discovery.
+	map.insert("BTC-USDT".to_string(), "http://localhost:50051".to_string());
+	map
+}
 
 /// Gateway service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,11 +168,7 @@ impl Default for GatewayConfig {
 		Self {
 			bind_addr: "0.0.0.0:8080".parse().unwrap(),
 			workers: None,
-			matching_engines: {
-				let mut map = HashMap::new();
-				map.insert("BTC-USDT".to_string(), "http://localhost:50051".to_string());
-				map
-			},
+			matching_engines: default_matching_engines(),
 			rate_limit: RateLimitConfig {
 				requests_per_second: 100,
 				burst: 200,

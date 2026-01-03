@@ -20,11 +20,19 @@ use std::{
 };
 
 use actix_web::{
-	Error,
+	Error, HttpMessage,
 	dev::{Service, ServiceRequest, ServiceResponse, Transform},
+	http::header::HeaderMap,
 };
-use tracing::Instrument;
-use tracing::info;
+use opentelemetry::{
+	propagation::{Extractor, TextMapPropagator},
+	trace::{TraceContextExt, TraceFlags, TraceState},
+};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use tracing::{Instrument, field, info};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use crate::request_context::RequestContext;
 
 /// CORS middleware for actix-web
 pub struct CorsMiddleware;
@@ -45,6 +53,28 @@ where
 		ready(Ok(CorsMiddlewareInner {
 			service: Rc::new(service),
 		}))
+	}
+}
+
+/// OpenTelemetry header extractor for actix-web HTTP headers
+///
+/// This adapter implements OpenTelemetry's `Extractor` trait to extract trace
+/// context from HTTP headers. It is used by `TraceContextPropagator` to read
+/// `traceparent` and `tracestate` headers from incoming requests.
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl<'a> Extractor for HeaderExtractor<'a> {
+	fn get(&self, key: &str) -> Option<&str> {
+		self.0
+			.get(key)
+			.and_then(|v: &actix_web::http::header::HeaderValue| v.to_str().ok())
+	}
+
+	fn keys(&self) -> Vec<&str> {
+		self.0
+			.keys()
+			.map(|k: &actix_web::http::header::HeaderName| k.as_str())
+			.collect()
 	}
 }
 
@@ -118,7 +148,12 @@ where
 	}
 }
 
+/// Inner service wrapper for logging middleware
+///
+/// This structure wraps the underlying service and adds logging, tracing, and
+/// OpenTelemetry context propagation to HTTP requests.
 pub struct LoggingMiddlewareInner<S> {
+	/// The wrapped service that handles the actual request processing
 	service: Rc<S>,
 }
 
@@ -140,8 +175,73 @@ where
 		let service = self.service.clone();
 		let method = req.method().clone();
 		let path = req.path().to_string();
-		let span =
-			tracing::span!(tracing::Level::INFO, "http_request", method = %method, path = %path);
+		let mut req = req;
+		let mut ctx = RequestContext::ensure(&mut req);
+
+		// Extract OpenTelemetry trace context from incoming HTTP headers
+		//
+		// The TraceContextPropagator reads `traceparent` and `tracestate` headers
+		// from the request and creates a parent span context. This context is used
+		// to link the current request span to the upstream trace.
+		let propagator = TraceContextPropagator::new();
+		let parent_cx = propagator.extract(&HeaderExtractor(req.headers()));
+		let span = tracing::span!(
+			tracing::Level::INFO,
+			"http_request",
+			method = %method,
+			path = %path,
+			request_id = %ctx.request_id,
+			trace_id = field::Empty,  // Will be set after parent context is applied
+			principal_id = field::Empty,
+			status_code = field::Empty,
+			latency_ms = field::Empty,
+			queue_wait_ms = field::Empty,
+			rpc_ms = field::Empty
+		);
+		// Set the extracted parent context as the parent of the current span
+		//
+		// This links the gateway's request span to the upstream trace, enabling
+		// end-to-end distributed tracing across service boundaries.
+		span.set_parent(parent_cx);
+
+		// Update RequestContext with OpenTelemetry span context
+		//
+		// If a valid span context was extracted or created, we update the
+		// RequestContext with the trace ID and build W3C-compliant traceparent
+		// and tracestate headers. These headers will be propagated to downstream
+		// services (matching engine via gRPC) and written to HTTP responses.
+		//
+		// We also update the span field with the OpenTelemetry trace_id to ensure
+		// consistency between span fields and log messages.
+		{
+			let otel_span = span.context();
+			let span_ctx = otel_span.span().span_context().clone();
+			if span_ctx.is_valid() {
+				let trace_id_hex = span_ctx.trace_id().to_string();
+				let span_id_hex = span_ctx.span_id().to_string();
+				let trace_flags: TraceFlags = span_ctx.trace_flags();
+				let state: TraceState = span_ctx.trace_state().clone();
+
+				// Update span field with OpenTelemetry trace_id to ensure consistency
+				span.record("trace_id", &trace_id_hex);
+
+				ctx.trace_id = trace_id_hex.clone();
+				ctx.traceparent = Some(format!(
+					"00-{}-{}-{:02x}",
+					trace_id_hex,
+					span_id_hex,
+					trace_flags.to_u8()
+				));
+				let state_header = state.header();
+				if !state_header.is_empty() {
+					ctx.tracestate = Some(state_header);
+				}
+				req.extensions_mut().insert(ctx.clone());
+			} else {
+				// If span context is invalid, use RequestContext trace_id as fallback
+				span.record("trace_id", &ctx.trace_id);
+			}
+		}
 
 		Box::pin(
 			async move {
@@ -149,15 +249,23 @@ where
 				let res = service.call(req).await;
 				let duration = start.elapsed();
 
-				match &res {
-					Ok(response) => {
+				match res {
+					Ok(mut response) => {
+						let status = response.status().as_u16();
+						let current = tracing::Span::current();
+						current.record("status_code", status);
+						current.record("latency_ms", duration.as_millis() as i64);
+						ctx.write_response_headers(&mut response);
 						info!(
 							method = %method,
 							path = %path,
-							status = response.status().as_u16(),
+							status = status,
 							duration_ms = duration.as_millis(),
+							request_id = %ctx.request_id,
+							trace_id = %ctx.trace_id,
 							"Request completed"
 						);
+						Ok(response)
 					}
 					Err(e) => {
 						tracing::error!(
@@ -165,12 +273,13 @@ where
 							path = %path,
 							error = %e,
 							duration_ms = duration.as_millis(),
+							request_id = %ctx.request_id,
+							trace_id = %ctx.trace_id,
 							"Request failed"
 						);
+						Err(e)
 					}
 				}
-
-				res
 			}
 			.instrument(span),
 		)
