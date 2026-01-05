@@ -41,5 +41,5 @@ dashmap = { workspace = true }
 moka = { workspace = true }
 opentelemetry = { version = "^0.21", features = ["trace"] }
 opentelemetry_sdk = { version = "^0.21", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "^0.14", features = ["trace", "grpc-tonic"] }
+opentelemetry-otlp = { version = "^0.31", features = ["trace", "grpc-tonic"] }
 lazy_static = "^1"
