@@ -38,7 +38,7 @@
 //! - If no parent exists, always sample (create spans)
 
 use anyhow::Result;
-use opentelemetry::{KeyValue, global, trace::TracerProvider};
+use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
 	propagation::TraceContextPropagator, resource::Resource, trace as sdktrace,
@@ -78,40 +78,31 @@ pub fn init_tracer() -> Result<Option<sdktrace::Tracer>> {
 	global::set_text_map_propagator(TraceContextPropagator::new());
 
 	// Create OpenTelemetry resource with service name for trace identification
-	let resource = Resource::new(vec![KeyValue::new("service.name", SERVICE_NAME)]);
-
-	// Create trace configuration with parent-based sampling
-	// ParentBased(AlwaysOn): respect upstream sampling decisions, always sample new traces
-	let make_config = || {
-		sdktrace::Config::default()
-			.with_sampler(sdktrace::Sampler::ParentBased(Box::new(
-				sdktrace::Sampler::AlwaysOn,
-			)))
-			.with_resource(resource.clone())
-	};
+	let resource = Resource::builder().with_service_name(SERVICE_NAME).build();
 
 	// Check if OTLP endpoint is configured for external trace export
 	let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
-	let tracer = if let Some(endpoint) = otlp_endpoint {
+	let provider_builder = sdktrace::SdkTracerProvider::builder()
+		.with_sampler(sdktrace::Sampler::ParentBased(Box::new(
+			sdktrace::Sampler::AlwaysOn,
+		)))
+		.with_resource(resource);
+
+	let provider = if let Some(endpoint) = otlp_endpoint {
 		// OTLP export mode: export traces to external observability backend
-		let exporter = opentelemetry_otlp::new_exporter()
-			.tonic()
-			.with_endpoint(endpoint);
-		opentelemetry_otlp::new_pipeline()
-			.tracing()
-			.with_exporter(exporter)
-			.with_trace_config(make_config())
-			.install_batch(opentelemetry_sdk::runtime::Tokio)?
+		let exporter = opentelemetry_otlp::SpanExporter::builder()
+			.with_tonic()
+			.with_endpoint(endpoint)
+			.build()?;
+		provider_builder.with_batch_exporter(exporter).build()
 	} else {
 		// Local mode: traces are only available via tracing layer (no external export)
-		let provider = sdktrace::TracerProvider::builder()
-			.with_config(make_config())
-			.build();
-		let tracer = provider.tracer(SERVICE_NAME);
-		global::set_tracer_provider(provider);
-		tracer
+		provider_builder.build()
 	};
+
+	let tracer = provider.tracer(SERVICE_NAME);
+	global::set_tracer_provider(provider);
 
 	Ok(Some(tracer))
 }

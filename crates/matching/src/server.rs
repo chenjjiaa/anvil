@@ -56,7 +56,9 @@ impl MatchingService for MatchingServiceImpl {
 	) -> Result<Response<SubmitOrderResponse>, Status> {
 		let parent_cx =
 			TraceContextPropagator::new().extract(&MetadataExtractor(request.metadata()));
-		tracing::Span::current().set_parent(parent_cx);
+		if let Err(err) = tracing::Span::current().set_parent(parent_cx) {
+			tracing::warn!(error = %err, "failed to set parent span context");
+		}
 
 		let req = request.into_inner();
 

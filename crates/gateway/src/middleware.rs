@@ -202,7 +202,9 @@ where
 		//
 		// This links the gateway's request span to the upstream trace, enabling
 		// end-to-end distributed tracing across service boundaries.
-		span.set_parent(parent_cx);
+		if let Err(err) = span.set_parent(parent_cx) {
+			tracing::warn!(error = %err, "failed to set parent span context");
+		}
 
 		// Update RequestContext with OpenTelemetry span context
 		//

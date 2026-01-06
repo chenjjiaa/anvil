@@ -31,9 +31,9 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = "^0.22"
-opentelemetry = { version = "^0.21", features = ["trace"] }
-opentelemetry_sdk = { version = "^0.21", features = ["trace"] }
+tracing-opentelemetry = "^0.32"
+opentelemetry = { version = "^0.31", features = ["trace"] }
+opentelemetry_sdk = { version = "^0.31", features = ["trace"] }
 tokio-stream = "^0.1"
 config = { workspace = true }
 dashmap = { workspace = true }
