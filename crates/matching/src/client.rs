@@ -14,11 +14,13 @@
 
 //! gRPC client for communicating with settlement service
 
-use anvil_sdk::types::Trade;
-use anvil_settlement::transaction::Chain;
 use std::time::Duration;
+
 use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
+
+use anvil_sdk::types::Trade;
+use anvil_settlement::transaction::Chain;
 
 // Include generated gRPC code
 pub mod proto {

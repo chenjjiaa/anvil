@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{net::SocketAddr, path::PathBuf};
+
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 
 /// Matching engine configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,26 @@ pub struct MatchingConfig {
 	pub market: String,
 	/// Settlement service endpoint
 	pub settlement_endpoint: String,
+	/// Ingress queue capacity
+	pub ingress_queue_size: usize,
+	/// Event buffer capacity
+	pub event_buffer_size: usize,
+	/// Event writer batch size
+	pub event_batch_size: usize,
+	/// Event writer batch timeout (milliseconds)
+	pub event_batch_timeout_ms: u64,
+	/// Snapshot interval (seconds)
+	pub snapshot_interval_secs: u64,
+	/// Maximum snapshots to keep
+	pub max_snapshots_to_keep: usize,
+	/// Journal path (optional, for future file-based journal)
+	pub journal_path: Option<PathBuf>,
+	/// Event storage path (optional, for future file-based events)
+	pub event_storage_path: Option<PathBuf>,
+	/// Snapshot path (optional, for future file-based snapshots)
+	pub snapshot_path: Option<PathBuf>,
+	/// Enable verbose logging
+	pub verbose_logging: bool,
 }
 
 impl Default for MatchingConfig {
@@ -32,6 +53,16 @@ impl Default for MatchingConfig {
 			bind_addr: "0.0.0.0:50051".parse().unwrap(),
 			market: "BTC-USDT".to_string(),
 			settlement_endpoint: "http://localhost:50052".to_string(),
+			ingress_queue_size: 10000,
+			event_buffer_size: 10000,
+			event_batch_size: 100,
+			event_batch_timeout_ms: 100,
+			snapshot_interval_secs: 300,
+			max_snapshots_to_keep: 10,
+			journal_path: None,
+			event_storage_path: None,
+			snapshot_path: None,
+			verbose_logging: false,
 		}
 	}
 }

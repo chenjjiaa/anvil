@@ -38,3 +38,4 @@ tokio-stream = "^0.1"
 config = { workspace = true }
 dashmap = { workspace = true }
 crossbeam = "^0.8"
+serde_json.workspace = true

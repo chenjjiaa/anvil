@@ -13,16 +13,30 @@
 // limitations under the License.
 
 //! gRPC server for matching engine
+//!
+//! This module implements the RPC ingress layer, which is multi-threaded
+//! and responsible for:
+//! - Receiving and validating order requests
+//! - Checking idempotency via Order Journal
+//! - Appending orders to Order Journal
+//! - Enqueuing orders to the matching loop
+//! - Returning ACK to clients
+//!
+//! The RPC layer does NOT perform matching - that happens in the
+//! single-threaded matching loop.
 
-use crate::Matcher;
-use crate::types::Order;
+use std::sync::{Arc, Mutex};
+
 use anvil_sdk::types::Side;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use tracing::{debug, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use crate::journal::OrderJournal;
+use crate::queue::QueueSender;
+use crate::types::OrderCommand;
 
 // Include generated gRPC code
 pub mod proto {
@@ -33,18 +47,36 @@ use proto::matching_service_server::{MatchingService, MatchingServiceServer};
 use proto::{
 	CancelOrderRequest, CancelOrderResponse, GetOrderRequest, GetOrderResponse, MatchedTrade,
 	OrderSide as ProtoOrderSide, OrderStatus as ProtoOrderStatus, StreamMatchedTradesRequest,
-	SubmitDisposition, SubmitOrderRequest, SubmitOrderResponse, Trade as ProtoTrade,
+	SubmitDisposition, SubmitOrderRequest, SubmitOrderResponse,
 };
 use tokio_stream;
 
 /// Matching service implementation
+///
+/// This is the RPC ingress layer. It is multi-threaded (one handler per request)
+/// but does NOT perform matching. Its responsibilities are:
+/// - Parameter validation
+/// - Idempotency checking via Order Journal
+/// - Appending to Order Journal
+/// - Enqueuing to ingress queue
+/// - Returning ACK
 pub struct MatchingServiceImpl {
-	matcher: Arc<RwLock<Matcher>>,
+	queue_sender: QueueSender,
+	journal: Arc<Mutex<Box<dyn OrderJournal>>>,
+	market: String,
 }
 
 impl MatchingServiceImpl {
-	pub fn new(matcher: Arc<RwLock<Matcher>>) -> Self {
-		Self { matcher }
+	pub fn new(
+		queue_sender: QueueSender,
+		journal: Arc<Mutex<Box<dyn OrderJournal>>>,
+		market: String,
+	) -> Self {
+		Self {
+			queue_sender,
+			journal,
+			market,
+		}
 	}
 }
 
@@ -54,16 +86,42 @@ impl MatchingService for MatchingServiceImpl {
 		&self,
 		request: Request<SubmitOrderRequest>,
 	) -> Result<Response<SubmitOrderResponse>, Status> {
+		// Extract tracing context
 		let parent_cx =
 			TraceContextPropagator::new().extract(&MetadataExtractor(request.metadata()));
 		if let Err(err) = tracing::Span::current().set_parent(parent_cx) {
-			tracing::warn!(error = %err, "failed to set parent span context");
+			warn!(error = %err, "failed to set parent span context");
 		}
 
 		let req = request.into_inner();
 
-		// Convert proto order to internal order
-		let order = Order {
+		// Basic validation
+		if req.market != self.market {
+			return Ok(Response::new(SubmitOrderResponse {
+				order_id: req.order_id,
+				status: ProtoOrderStatus::Rejected as i32,
+				trades: Vec::new(),
+				fully_filled: false,
+				partially_filled: false,
+				disposition: SubmitDisposition::InvalidOrder as i32,
+				reason: format!("Market {} not supported", req.market),
+			}));
+		}
+
+		if req.size == 0 {
+			return Ok(Response::new(SubmitOrderResponse {
+				order_id: req.order_id,
+				status: ProtoOrderStatus::Rejected as i32,
+				trades: Vec::new(),
+				fully_filled: false,
+				partially_filled: false,
+				disposition: SubmitDisposition::InvalidOrder as i32,
+				reason: "Order size must be greater than 0".to_string(),
+			}));
+		}
+
+		// Create order command
+		let cmd = OrderCommand {
 			order_id: req.order_id.clone(),
 			market: req.market.clone(),
 			side: match req.side() {
@@ -72,67 +130,89 @@ impl MatchingService for MatchingServiceImpl {
 			},
 			price: req.price,
 			size: req.size,
-			remaining_size: req.remaining_size,
 			timestamp: req.timestamp,
 			public_key: req.public_key.clone(),
 		};
 
-		// Submit to matcher
-		let matcher = self.matcher.read().await;
-		let result = matcher.match_order(order);
-
-		let result = match result {
-			Ok(result) => result,
-			Err(e) => {
+		// Check idempotency: is this order already active?
+		{
+			let journal = self.journal.lock().unwrap();
+			if journal.is_active(&cmd.order_id) {
+				debug!("Duplicate order detected: {}", cmd.order_id);
 				return Ok(Response::new(SubmitOrderResponse {
-					order_id: req.order_id,
+					order_id: cmd.order_id,
 					status: ProtoOrderStatus::Rejected as i32,
 					trades: Vec::new(),
 					fully_filled: false,
 					partially_filled: false,
 					disposition: SubmitDisposition::InvalidOrder as i32,
-					reason: e.to_string(),
+					reason: "Duplicate order ID".to_string(),
 				}));
 			}
-		};
+		}
 
-		// Convert trades to proto
-		let proto_trades: Vec<ProtoTrade> = result
-			.trades
-			.iter()
-			.map(|t| ProtoTrade {
-				trade_id: t.trade_id.clone(),
-				market: t.market.clone(),
-				price: t.price,
-				size: t.size,
-				side: match t.side {
-					Side::Buy => ProtoOrderSide::Buy as i32,
-					Side::Sell => ProtoOrderSide::Sell as i32,
-				},
-				timestamp: t.timestamp,
-				maker_order_id: t.maker_order_id.clone(),
-				taker_order_id: t.taker_order_id.clone(),
-			})
-			.collect();
+		// Append to Order Journal (before ACK!)
+		{
+			let mut journal = self.journal.lock().unwrap();
+			if let Err(e) = journal.append(cmd.clone()) {
+				return Ok(Response::new(SubmitOrderResponse {
+					order_id: cmd.order_id,
+					status: ProtoOrderStatus::Rejected as i32,
+					trades: Vec::new(),
+					fully_filled: false,
+					partially_filled: false,
+					disposition: SubmitDisposition::InternalError as i32,
+					reason: format!("Journal error: {}", e),
+				}));
+			}
+		}
 
-		// Determine status
-		let status = if result.fully_filled {
-			ProtoOrderStatus::Filled
-		} else if result.partially_filled {
-			ProtoOrderStatus::PartiallyFilled
-		} else {
-			ProtoOrderStatus::Accepted
-		};
+		// Try to enqueue to matching loop
+		match self.queue_sender.try_enqueue(cmd.clone()) {
+			Ok(_) => {
+				// Successfully enqueued
+				// ACK means: order has been accepted and recorded in journal
+				// Matching will happen asynchronously
+				debug!("Order {} accepted and enqueued", cmd.order_id);
 
-		Ok(Response::new(SubmitOrderResponse {
-			order_id: result.order.order_id,
-			status: status as i32,
-			trades: proto_trades,
-			fully_filled: result.fully_filled,
-			partially_filled: result.partially_filled,
-			disposition: SubmitDisposition::AcceptedOk as i32,
-			reason: String::new(),
-		}))
+				Ok(Response::new(SubmitOrderResponse {
+					order_id: cmd.order_id,
+					status: ProtoOrderStatus::Accepted as i32,
+					trades: Vec::new(),
+					fully_filled: false,
+					partially_filled: false,
+					disposition: SubmitDisposition::AcceptedOk as i32,
+					reason: String::new(),
+				}))
+			}
+			Err(crate::queue::QueueError::Full) => {
+				// Queue full - engine overloaded
+				// Note: order is still in journal, will be retried on recovery
+				warn!("Ingress queue full, rejecting order {}", cmd.order_id);
+
+				Ok(Response::new(SubmitOrderResponse {
+					order_id: cmd.order_id,
+					status: ProtoOrderStatus::Rejected as i32,
+					trades: Vec::new(),
+					fully_filled: false,
+					partially_filled: false,
+					disposition: SubmitDisposition::OverloadedEngine as i32,
+					reason: "Matching engine overloaded".to_string(),
+				}))
+			}
+			Err(e) => {
+				// Queue disconnected or other error
+				Ok(Response::new(SubmitOrderResponse {
+					order_id: cmd.order_id,
+					status: ProtoOrderStatus::Rejected as i32,
+					trades: Vec::new(),
+					fully_filled: false,
+					partially_filled: false,
+					disposition: SubmitDisposition::InternalError as i32,
+					reason: format!("Queue error: {}", e),
+				}))
+			}
+		}
 	}
 
 	async fn get_order(
@@ -145,24 +225,12 @@ impl MatchingService for MatchingServiceImpl {
 
 	async fn cancel_order(
 		&self,
-		request: Request<CancelOrderRequest>,
+		_request: Request<CancelOrderRequest>,
 	) -> Result<Response<CancelOrderResponse>, Status> {
-		let req = request.into_inner();
-
-		let side = match req.side() {
-			ProtoOrderSide::Buy => Side::Buy,
-			ProtoOrderSide::Sell => Side::Sell,
-		};
-
-		let matcher = self.matcher.write().await;
-		let result = matcher
-			.cancel_order(&req.market, side, &req.order_id)
-			.map_err(|e| Status::internal(format!("Cancel error: {}", e)))?;
-
-		Ok(Response::new(CancelOrderResponse {
-			success: result.is_some(),
-			order_id: req.order_id,
-		}))
+		// TODO: Implement order cancellation via OrderCommand
+		Err(Status::unimplemented(
+			"Order cancellation not yet implemented",
+		))
 	}
 
 	type StreamMatchedTradesStream =
@@ -172,7 +240,7 @@ impl MatchingService for MatchingServiceImpl {
 		&self,
 		_request: Request<StreamMatchedTradesRequest>,
 	) -> Result<Response<Self::StreamMatchedTradesStream>, Status> {
-		// TODO: Implement streaming
+		// TODO: Implement streaming from event buffer
 		let (_tx, rx) = tokio::sync::mpsc::channel(128);
 		Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
 			rx,
@@ -181,8 +249,12 @@ impl MatchingService for MatchingServiceImpl {
 }
 
 /// Create matching service server
-pub fn create_server(matcher: Arc<RwLock<Matcher>>) -> MatchingServiceServer<MatchingServiceImpl> {
-	MatchingServiceServer::new(MatchingServiceImpl::new(matcher))
+pub fn create_server(
+	queue_sender: QueueSender,
+	journal: Arc<Mutex<Box<dyn OrderJournal>>>,
+	market: String,
+) -> MatchingServiceServer<MatchingServiceImpl> {
+	MatchingServiceServer::new(MatchingServiceImpl::new(queue_sender, journal, market))
 }
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
