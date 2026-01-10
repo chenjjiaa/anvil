@@ -105,7 +105,7 @@ impl MatchingEngine {
 		let thread_handle = thread::Builder::new()
 			.name("matching-loop".to_string())
 			.spawn(move || {
-				info!("Matching engine started for market: {}", config.market);
+				info!(target: "engine", "Matching engine started for market: {}", config.market);
 				let mut state = state_clone.lock().unwrap();
 				Self::run_matching_loop(
 					&mut state,
@@ -115,7 +115,7 @@ impl MatchingEngine {
 					&journal,
 					&shutdown_clone,
 				);
-				info!("Matching engine stopped");
+				info!(target: "engine", "Matching engine stopped");
 			})
 			.expect("Failed to spawn matching engine thread");
 
@@ -158,12 +158,12 @@ impl MatchingEngine {
 					continue;
 				}
 				Err(crate::queue::QueueError::Disconnected) => {
-					error!("Ingress queue disconnected");
+					error!(target: "engine", "Ingress queue disconnected");
 					break;
 				}
 				Err(crate::queue::QueueError::Full) => {
 					// Should not happen on try_recv
-					error!("Unexpected Full error on try_recv");
+					error!(target: "engine", "Unexpected Full error on try_recv");
 					continue;
 				}
 			};
@@ -176,8 +176,13 @@ impl MatchingEngine {
 			}
 
 			// Process the order command
-			if let Err(e) = Self::process_order(state, cmd, event_producer, journal) {
-				error!("Failed to process order: {}", e);
+			if let Err(e) = Self::process_order(state, cmd.clone(), event_producer, journal) {
+				error!(
+					target: "engine",
+					order_id = %cmd.order_id,
+					error = %e,
+					"Failed to process order"
+				);
 			}
 		}
 	}
@@ -190,6 +195,7 @@ impl MatchingEngine {
 		journal: &Arc<std::sync::Mutex<Box<dyn OrderJournal>>>,
 	) -> Result<(), EngineError> {
 		let order_size = cmd.size;
+		let order_id = cmd.order_id.clone();
 		let mut order: Order = cmd.clone().into();
 		let mut trades = Vec::new();
 
@@ -204,6 +210,18 @@ impl MatchingEngine {
 				Some(trade) => {
 					order.remaining_size -= trade.size;
 					state.next_sequence += 1;
+
+					debug!(
+						order_id = %order_id,
+						trade_id = %trade.trade_id,
+						maker = %trade.maker_order_id,
+						taker = %trade.taker_order_id,
+						price = trade.price,
+						size = trade.size,
+						side = ?trade.side,
+						seq = state.next_sequence,
+						"Trade executed"
+					);
 
 					let event = MatchingEvent::TradeExecuted {
 						seq: state.next_sequence,
@@ -226,6 +244,16 @@ impl MatchingEngine {
 
 		if order.remaining_size == 0 {
 			// Fully filled
+			info!(
+				order_id = %order_id,
+				market = %order.market,
+				side = ?order.side,
+				filled_size = order_size,
+				trades_count = trades.len(),
+				seq = state.next_sequence,
+				"Order fully filled"
+			);
+
 			let event = MatchingEvent::OrderFilled {
 				seq: state.next_sequence,
 				order_id: order.order_id.clone(),
@@ -242,11 +270,24 @@ impl MatchingEngine {
 		} else if !trades.is_empty() {
 			// Partially filled
 			let remaining_size = order.remaining_size;
+			let filled_size = order_size - remaining_size;
+
+			info!(
+				order_id = %order_id,
+				market = %order.market,
+				side = ?order.side,
+				filled_size = filled_size,
+				remaining_size = remaining_size,
+				trades_count = trades.len(),
+				seq = state.next_sequence,
+				"Order partially filled"
+			);
+
 			let event = MatchingEvent::OrderPartiallyFilled {
 				seq: state.next_sequence,
 				order_id: order.order_id.clone(),
 				market: order.market.clone(),
-				filled_size: order_size - remaining_size,
+				filled_size,
 				remaining_size,
 				timestamp: Self::timestamp(),
 			};
@@ -258,6 +299,14 @@ impl MatchingEngine {
 			state.orderbook.add_order(order);
 
 			state.next_sequence += 1;
+
+			debug!(
+				order_id = %order_id,
+				remaining_size = remaining_size,
+				seq = state.next_sequence,
+				"Order accepted to book"
+			);
+
 			let accepted_event = MatchingEvent::OrderAccepted {
 				seq: state.next_sequence,
 				order_id: cmd.order_id.clone(),
@@ -274,6 +323,16 @@ impl MatchingEngine {
 			// No match, add to orderbook
 			let remaining_size = order.remaining_size;
 			state.orderbook.add_order(order);
+
+			debug!(
+				order_id = %order_id,
+				market = %cmd.market,
+				side = ?cmd.side,
+				price = cmd.price,
+				size = remaining_size,
+				seq = state.next_sequence,
+				"Order accepted to book (no match)"
+			);
 
 			let event = MatchingEvent::OrderAccepted {
 				seq: state.next_sequence,

@@ -31,7 +31,7 @@ use anvil_sdk::types::Side;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tonic::{Request, Response, Status};
-use tracing::{debug, warn};
+use tracing::{debug, field, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::journal::OrderJournal;
@@ -86,17 +86,50 @@ impl MatchingService for MatchingServiceImpl {
 		&self,
 		request: Request<SubmitOrderRequest>,
 	) -> Result<Response<SubmitOrderResponse>, Status> {
-		// Extract tracing context
+		let start = std::time::Instant::now();
+
+		// Extract tracing context from gRPC metadata
 		let parent_cx =
 			TraceContextPropagator::new().extract(&MetadataExtractor(request.metadata()));
-		if let Err(err) = tracing::Span::current().set_parent(parent_cx) {
-			warn!(error = %err, "failed to set parent span context");
-		}
 
 		let req = request.into_inner();
 
+		// Create structured span with all important fields
+		let span = tracing::info_span!(
+			"submit_order",
+			order_id = %req.order_id,
+			market = %req.market,
+			side = ?req.side(),
+			price = req.price,
+			size = req.size,
+			public_key = %req.public_key,
+			trace_id = field::Empty,
+			status = field::Empty,
+			disposition = field::Empty,
+			latency_ms = field::Empty
+		);
+
+		// Set parent context for distributed tracing
+		if let Err(err) = span.set_parent(parent_cx) {
+			warn!(error = %err, "failed to set parent span context");
+		}
+
+		// Enter the span for this request
+		let _guard = span.enter();
+
 		// Basic validation
 		if req.market != self.market {
+			let duration = start.elapsed();
+			tracing::Span::current().record("status", "rejected");
+			tracing::Span::current().record("disposition", "invalid_order");
+			tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+			warn!(
+				order_id = %req.order_id,
+				market = %req.market,
+				reason = "unsupported market",
+				duration_ms = duration.as_millis(),
+				"Order rejected"
+			);
 			return Ok(Response::new(SubmitOrderResponse {
 				order_id: req.order_id,
 				status: ProtoOrderStatus::Rejected as i32,
@@ -109,6 +142,16 @@ impl MatchingService for MatchingServiceImpl {
 		}
 
 		if req.size == 0 {
+			let duration = start.elapsed();
+			tracing::Span::current().record("status", "rejected");
+			tracing::Span::current().record("disposition", "invalid_order");
+			tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+			warn!(
+				order_id = %req.order_id,
+				reason = "zero size",
+				duration_ms = duration.as_millis(),
+				"Order rejected"
+			);
 			return Ok(Response::new(SubmitOrderResponse {
 				order_id: req.order_id,
 				status: ProtoOrderStatus::Rejected as i32,
@@ -138,7 +181,16 @@ impl MatchingService for MatchingServiceImpl {
 		{
 			let journal = self.journal.lock().unwrap();
 			if journal.is_active(&cmd.order_id) {
-				debug!("Duplicate order detected: {}", cmd.order_id);
+				let duration = start.elapsed();
+				tracing::Span::current().record("status", "rejected");
+				tracing::Span::current().record("disposition", "duplicate");
+				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+				debug!(
+					order_id = %cmd.order_id,
+					reason = "duplicate order ID",
+					duration_ms = duration.as_millis(),
+					"Duplicate order detected"
+				);
 				return Ok(Response::new(SubmitOrderResponse {
 					order_id: cmd.order_id,
 					status: ProtoOrderStatus::Rejected as i32,
@@ -155,6 +207,16 @@ impl MatchingService for MatchingServiceImpl {
 		{
 			let mut journal = self.journal.lock().unwrap();
 			if let Err(e) = journal.append(cmd.clone()) {
+				let duration = start.elapsed();
+				tracing::Span::current().record("status", "rejected");
+				tracing::Span::current().record("disposition", "journal_error");
+				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+				warn!(
+					order_id = %cmd.order_id,
+					error = %e,
+					duration_ms = duration.as_millis(),
+					"Journal append failed"
+				);
 				return Ok(Response::new(SubmitOrderResponse {
 					order_id: cmd.order_id,
 					status: ProtoOrderStatus::Rejected as i32,
@@ -173,7 +235,19 @@ impl MatchingService for MatchingServiceImpl {
 				// Successfully enqueued
 				// ACK means: order has been accepted and recorded in journal
 				// Matching will happen asynchronously
-				debug!("Order {} accepted and enqueued", cmd.order_id);
+				let duration = start.elapsed();
+				tracing::Span::current().record("status", "accepted");
+				tracing::Span::current().record("disposition", "accepted_ok");
+				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+				info!(
+					order_id = %cmd.order_id,
+					market = %cmd.market,
+					side = ?cmd.side,
+					price = cmd.price,
+					size = cmd.size,
+					duration_ms = duration.as_millis(),
+					"Order accepted"
+				);
 
 				Ok(Response::new(SubmitOrderResponse {
 					order_id: cmd.order_id,
@@ -188,7 +262,16 @@ impl MatchingService for MatchingServiceImpl {
 			Err(crate::queue::QueueError::Full) => {
 				// Queue full - engine overloaded
 				// Note: order is still in journal, will be retried on recovery
-				warn!("Ingress queue full, rejecting order {}", cmd.order_id);
+				let duration = start.elapsed();
+				tracing::Span::current().record("status", "rejected");
+				tracing::Span::current().record("disposition", "overloaded");
+				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+				warn!(
+					order_id = %cmd.order_id,
+					reason = "ingress queue full",
+					duration_ms = duration.as_millis(),
+					"Engine overloaded"
+				);
 
 				Ok(Response::new(SubmitOrderResponse {
 					order_id: cmd.order_id,
@@ -202,6 +285,16 @@ impl MatchingService for MatchingServiceImpl {
 			}
 			Err(e) => {
 				// Queue disconnected or other error
+				let duration = start.elapsed();
+				tracing::Span::current().record("status", "rejected");
+				tracing::Span::current().record("disposition", "queue_error");
+				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
+				warn!(
+					order_id = %cmd.order_id,
+					error = %e,
+					duration_ms = duration.as_millis(),
+					"Queue error"
+				);
 				Ok(Response::new(SubmitOrderResponse {
 					order_id: cmd.order_id,
 					status: ProtoOrderStatus::Rejected as i32,

@@ -31,11 +31,14 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 tracing-opentelemetry = "^0.32"
 opentelemetry = { version = "^0.31", features = ["trace"] }
 opentelemetry_sdk = { version = "^0.31", features = ["trace"] }
+opentelemetry-otlp = { version = "^0.31", features = ["trace", "grpc-tonic"] }
 tokio-stream = "^0.1"
 config = { workspace = true }
 dashmap = { workspace = true }
 crossbeam = "^0.8"
 serde_json.workspace = true
+dotenv = "^0.15"

@@ -85,9 +85,9 @@ impl EventWriter {
 		let thread_handle = thread::Builder::new()
 			.name("event-writer".to_string())
 			.spawn(move || {
-				info!("Event writer started");
+				info!(target: "event_writer", "Event writer started");
 				Self::run_writer_loop(&consumer, storage.as_mut(), &config, &shutdown_clone);
-				info!("Event writer stopped");
+				info!(target: "event_writer", "Event writer stopped");
 			})
 			.expect("Failed to spawn event writer thread");
 
@@ -111,37 +111,86 @@ impl EventWriter {
 		loop {
 			if shutdown.load(Ordering::Relaxed) {
 				// Flush remaining events before shutdown
-				if !pending_events.is_empty()
-					&& let Err(e) = Self::commit_batch(storage, &pending_events, config)
-				{
-					error!("Failed to commit final batch during shutdown: {}", e);
+				if !pending_events.is_empty() {
+					let batch_size = pending_events.len();
+					if let Err(e) = Self::commit_batch(storage, &pending_events, config) {
+						error!(
+							target: "event_writer",
+							batch_size = batch_size,
+							error = %e,
+							"Failed to commit final batch during shutdown"
+						);
+					} else {
+						info!(
+							target: "event_writer",
+							batch_size = batch_size,
+							"Flushed final batch during shutdown"
+						);
+					}
 				}
 				break;
 			}
 
 			// Try to drain events from buffer
-			let drained = consumer.drain(config.batch_size - pending_events.len());
-			pending_events.extend(drained);
+			let drained_count = {
+				let drained = consumer.drain(config.batch_size - pending_events.len());
+				let count = drained.len();
+				pending_events.extend(drained);
+				count
+			};
+
+			// Check buffer pressure for observability
+			if drained_count > config.batch_size / 2 && config.verbose_logging {
+				debug!(
+					target: "event_writer",
+					drained = drained_count,
+					pending = pending_events.len(),
+					"High event buffer pressure"
+				);
+			}
 
 			// Commit if batch is full or timeout elapsed
 			let should_commit = pending_events.len() >= config.batch_size
 				|| (!pending_events.is_empty() && last_commit_time.elapsed() >= batch_timeout);
 
 			if should_commit {
+				let batch_size = pending_events.len();
+				let start = std::time::Instant::now();
+
 				match Self::commit_batch(storage, &pending_events, config) {
 					Ok(last_seq) => {
+						let duration = start.elapsed();
+						let first_seq = pending_events.first().map(|e| e.sequence()).unwrap_or(0);
+
 						if config.verbose_logging {
 							debug!(
-								"Committed batch of {} events, last_seq={}",
-								pending_events.len(),
-								last_seq
+								target: "event_writer",
+								batch_size = batch_size,
+								seq_range = format!("{}-{}", first_seq, last_seq),
+								latency_ms = duration.as_millis(),
+								"Batch committed"
+							);
+						} else if batch_size > 50 {
+							// Log large batches even if verbose logging is off
+							info!(
+								target: "event_writer",
+								batch_size = batch_size,
+								seq_range = format!("{}-{}", first_seq, last_seq),
+								latency_ms = duration.as_millis(),
+								"Large batch committed"
 							);
 						}
+
 						pending_events.clear();
 						last_commit_time = std::time::Instant::now();
 					}
 					Err(e) => {
-						error!("Failed to commit event batch: {}", e);
+						error!(
+							target: "event_writer",
+							batch_size = batch_size,
+							error = %e,
+							"Failed to commit event batch"
+						);
 						// In production, this should trigger alerting
 						// For now, we'll retry on next iteration
 						thread::sleep(Duration::from_millis(100));
@@ -172,13 +221,13 @@ impl EventWriter {
 
 	/// Shutdown the event writer gracefully
 	pub fn shutdown(mut self) {
-		info!("Shutting down event writer");
+		info!(target: "event_writer", "Shutting down event writer");
 		self.shutdown.store(true, Ordering::Relaxed);
 
 		if let Some(handle) = self.thread_handle.take()
 			&& let Err(e) = handle.join()
 		{
-			warn!("Event writer thread panicked: {:?}", e);
+			warn!(target: "event_writer", error = ?e, "Event writer thread panicked");
 		}
 	}
 }

@@ -16,6 +16,16 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+// Logging configuration constants
+/// Default log level (can be overridden by RUST_LOG environment variable)
+pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+/// Default log directory component name
+pub const LOG_COMPONENT_NAME: &str = "matching";
+
+/// Default console output enabled (can be overridden by LOG_TO_CONSOLE environment variable)
+pub const DEFAULT_LOG_TO_CONSOLE: bool = false;
+
 /// Matching engine configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchingConfig {

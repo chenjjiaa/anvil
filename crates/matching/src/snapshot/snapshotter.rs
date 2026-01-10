@@ -21,7 +21,7 @@ use std::{
 	time::Duration,
 };
 
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{Snapshot, SnapshotStorage};
 
@@ -83,14 +83,14 @@ impl Snapshotter {
 		let thread_handle = thread::Builder::new()
 			.name("snapshotter".to_string())
 			.spawn(move || {
-				info!("Snapshotter started");
+				info!(target: "snapshotter", "Snapshotter started");
 				Self::run_snapshot_loop(
 					storage.as_mut(),
 					&config,
 					snapshot_provider.as_ref(),
 					&shutdown_clone,
 				);
-				info!("Snapshotter stopped");
+				info!(target: "snapshotter", "Snapshotter stopped");
 			})
 			.expect("Failed to spawn snapshotter thread");
 
@@ -120,41 +120,82 @@ impl Snapshotter {
 			}
 
 			// Request a snapshot from the matching engine
+			let start = std::time::Instant::now();
 			match provider.create_snapshot() {
 				Ok(snapshot) => {
-					if let Err(e) = storage.save(snapshot.clone()) {
-						error!("Failed to save snapshot: {}", e);
-						continue;
-					}
+					let snapshot_duration = start.elapsed();
+					let seq = snapshot.metadata.event_seq;
+					let size = snapshot.metadata.size_bytes;
 
-					info!(
-						"Snapshot created at seq={}, size={}",
-						snapshot.metadata.event_seq, snapshot.metadata.size_bytes
-					);
+					match storage.save(snapshot.clone()) {
+						Ok(_) => {
+							let total_duration = start.elapsed();
+							info!(
+								target: "snapshotter",
+								seq = seq,
+								size_bytes = size,
+								snapshot_ms = snapshot_duration.as_millis(),
+								save_ms = (total_duration - snapshot_duration).as_millis(),
+								total_ms = total_duration.as_millis(),
+								"Snapshot created and saved"
+							);
+						}
+						Err(e) => {
+							error!(
+								target: "snapshotter",
+								seq = seq,
+								error = %e,
+								"Failed to save snapshot"
+							);
+							continue;
+						}
+					}
 
 					// Cleanup old snapshots
 					let snapshots = storage.list_snapshots();
-					if snapshots.len() > config.max_snapshots_to_keep {
+					let total_snapshots = snapshots.len();
+
+					if total_snapshots > config.max_snapshots_to_keep {
 						let cutoff_seq =
 							snapshots[snapshots.len() - config.max_snapshots_to_keep].event_seq;
-						if let Err(e) = storage.cleanup_before(cutoff_seq) {
-							error!("Failed to cleanup old snapshots: {}", e);
+						let to_delete = total_snapshots - config.max_snapshots_to_keep;
+
+						match storage.cleanup_before(cutoff_seq) {
+							Ok(_) => {
+								debug!(
+									target: "snapshotter",
+									deleted_count = to_delete,
+									retained_count = config.max_snapshots_to_keep,
+									cutoff_seq = cutoff_seq,
+									"Old snapshots cleaned up"
+								);
+							}
+							Err(e) => {
+								error!(
+									target: "snapshotter",
+									cutoff_seq = cutoff_seq,
+									error = %e,
+									"Failed to cleanup old snapshots"
+								);
+							}
 						}
 					}
 				}
 				Err(e) => {
-					error!("Failed to create snapshot: {}", e);
+					error!(target: "snapshotter", error = %e, "Failed to create snapshot");
 				}
 			}
 		}
 	}
 
 	pub fn shutdown(mut self) {
-		info!("Shutting down snapshotter");
+		info!(target: "snapshotter", "Shutting down snapshotter");
 		self.shutdown.store(true, Ordering::Relaxed);
 
-		if let Some(handle) = self.thread_handle.take() {
-			let _ = handle.join();
+		if let Some(handle) = self.thread_handle.take()
+			&& let Err(e) = handle.join()
+		{
+			warn!(target: "snapshotter", error = ?e, "Snapshotter thread panicked");
 		}
 	}
 }
