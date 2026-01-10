@@ -203,38 +203,28 @@ impl MatchingService for MatchingServiceImpl {
 			}
 		}
 
-		// Append to Order Journal (before ACK!)
-		{
-			let mut journal = self.journal.lock().unwrap();
-			if let Err(e) = journal.append(cmd.clone()) {
-				let duration = start.elapsed();
-				tracing::Span::current().record("status", "rejected");
-				tracing::Span::current().record("disposition", "journal_error");
-				tracing::Span::current().record("latency_ms", duration.as_millis() as u64);
-				warn!(
-					order_id = %cmd.order_id,
-					error = %e,
-					duration_ms = duration.as_millis(),
-					"Journal append failed"
-				);
-				return Ok(Response::new(SubmitOrderResponse {
-					order_id: cmd.order_id,
-					status: ProtoOrderStatus::Rejected as i32,
-					trades: Vec::new(),
-					fully_filled: false,
-					partially_filled: false,
-					disposition: SubmitDisposition::InternalError as i32,
-					reason: format!("Journal error: {}", e),
-				}));
-			}
-		}
-
-		// Try to enqueue to matching loop
+		// Try to enqueue to matching loop first (before journal append)
+		// This ensures queue full errors don't leave orders stuck in journal
 		match self.queue_sender.try_enqueue(cmd.clone()) {
 			Ok(_) => {
-				// Successfully enqueued
-				// ACK means: order has been accepted and recorded in journal
-				// Matching will happen asynchronously
+				// Successfully enqueued, now append to journal for idempotency protection
+				{
+					let mut journal = self.journal.lock().unwrap();
+					if let Err(e) = journal.append(cmd.clone()) {
+						// This is an edge case: order is in queue but journal append failed
+						// The order will be processed but without idempotency protection
+						// This should be extremely rare with in-memory journal
+						warn!(
+							order_id = %cmd.order_id,
+							error = %e,
+							"Journal append failed after successful enqueue - order will be processed without idempotency protection"
+						);
+						// We still return Accepted because the order is in the queue
+						// The warning above should trigger monitoring alerts
+					}
+				}
+
+				// Return ACK: order has been accepted
 				let duration = start.elapsed();
 				tracing::Span::current().record("status", "accepted");
 				tracing::Span::current().record("disposition", "accepted_ok");
@@ -261,7 +251,8 @@ impl MatchingService for MatchingServiceImpl {
 			}
 			Err(crate::queue::QueueError::Full) => {
 				// Queue full - engine overloaded
-				// Note: order is still in journal, will be retried on recovery
+				// Order was NOT enqueued and NOT added to journal
+				// Client can safely retry with the same order_id
 				let duration = start.elapsed();
 				tracing::Span::current().record("status", "rejected");
 				tracing::Span::current().record("disposition", "overloaded");
@@ -270,7 +261,7 @@ impl MatchingService for MatchingServiceImpl {
 					order_id = %cmd.order_id,
 					reason = "ingress queue full",
 					duration_ms = duration.as_millis(),
-					"Engine overloaded"
+					"Engine overloaded - order not accepted, client can retry"
 				);
 
 				Ok(Response::new(SubmitOrderResponse {
@@ -280,7 +271,7 @@ impl MatchingService for MatchingServiceImpl {
 					fully_filled: false,
 					partially_filled: false,
 					disposition: SubmitDisposition::OverloadedEngine as i32,
-					reason: "Matching engine overloaded".to_string(),
+					reason: "Matching engine overloaded, please retry".to_string(),
 				}))
 			}
 			Err(e) => {
@@ -358,6 +349,9 @@ impl<'a> Extractor for MetadataExtractor<'a> {
 	}
 
 	fn keys(&self) -> Vec<&str> {
-		Vec::new()
+		// Return well-known tracing headers that we should extract
+		// This is a pragmatic approach since MetadataKey cannot be directly converted to &str
+		// The propagator will use get() to actually retrieve the values
+		vec!["traceparent", "tracestate"]
 	}
 }

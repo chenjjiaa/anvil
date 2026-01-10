@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod control;
 mod state;
 
+pub use control::EngineControlMessage;
 pub use state::MatchingEngineState;
 
 use std::{
@@ -27,6 +29,7 @@ use std::{
 
 use anvil_sdk::types::{Side, Trade};
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -37,6 +40,14 @@ use crate::{
 	snapshot::{Snapshot, SnapshotMetadata},
 	types::{Order, OrderCommand},
 };
+
+/// Result of a match operation including trade and maker order info
+struct MatchResult {
+	trade: Trade,
+	maker_order_id: String,
+	maker_was_fully_filled: bool,
+	maker_remaining_size: u64,
+}
 
 /// Error types for matching engine operations
 #[derive(Debug, Error)]
@@ -81,10 +92,13 @@ impl Default for EngineConfig {
 ///
 /// The matching loop is the absolute core of the system - all order state
 /// changes occur here, ensuring no race conditions.
+///
+/// Control messages (like snapshot requests) are handled via a separate
+/// control channel to avoid blocking the matching loop.
 pub struct MatchingEngine {
 	thread_handle: Option<JoinHandle<()>>,
 	shutdown: Arc<AtomicBool>,
-	state_handle: Arc<std::sync::Mutex<MatchingEngineState>>,
+	control_tx: mpsc::Sender<EngineControlMessage>,
 }
 
 impl MatchingEngine {
@@ -98,21 +112,23 @@ impl MatchingEngine {
 		let shutdown = Arc::new(AtomicBool::new(false));
 		let shutdown_clone = shutdown.clone();
 
+		// Create control channel for snapshot requests and shutdown
+		let (control_tx, control_rx) = mpsc::channel(16);
+
 		let state = MatchingEngineState::new(config.market.clone());
-		let state_handle = Arc::new(std::sync::Mutex::new(state));
-		let state_clone = state_handle.clone();
 
 		let thread_handle = thread::Builder::new()
 			.name("matching-loop".to_string())
 			.spawn(move || {
 				info!(target: "engine", "Matching engine started for market: {}", config.market);
-				let mut state = state_clone.lock().unwrap();
+				// State is moved into the thread - complete ownership, no external Mutex
 				Self::run_matching_loop(
-					&mut state,
+					state,
 					&config,
 					&queue_receiver,
 					&event_producer,
 					&journal,
+					control_rx,
 					&shutdown_clone,
 				);
 				info!(target: "engine", "Matching engine stopped");
@@ -122,28 +138,63 @@ impl MatchingEngine {
 		Self {
 			thread_handle: Some(thread_handle),
 			shutdown,
-			state_handle,
+			control_tx,
 		}
 	}
 
 	/// Main matching loop - the heart of the engine
 	///
 	/// This loop:
-	/// 1. Dequeues OrderCommand from ingress queue (blocking)
-	/// 2. Applies matching logic with price-time priority
-	/// 3. Emits events for all state changes
-	/// 4. Updates in-memory orderbook
+	/// 1. Dequeues OrderCommand from ingress queue (non-blocking with timeout)
+	/// 2. Checks for control messages (snapshot requests, shutdown)
+	/// 3. Applies matching logic with price-time priority
+	/// 4. Emits events for all state changes
+	/// 5. Updates in-memory orderbook
 	fn run_matching_loop(
-		state: &mut MatchingEngineState,
+		mut state: MatchingEngineState,
 		config: &EngineConfig,
 		queue_receiver: &QueueReceiver,
 		event_producer: &EventProducer,
 		journal: &Arc<std::sync::Mutex<Box<dyn OrderJournal>>>,
+		mut control_rx: mpsc::Receiver<EngineControlMessage>,
 		shutdown: &Arc<AtomicBool>,
 	) {
 		loop {
 			if shutdown.load(Ordering::Relaxed) {
 				break;
+			}
+
+			// Check for control messages (non-blocking)
+			match control_rx.try_recv() {
+				Ok(EngineControlMessage::CreateSnapshot { respond_to }) => {
+					// Create snapshot directly - we own the state
+					let snapshot_result = Self::create_snapshot_internal(&state);
+					let _ = respond_to.send(snapshot_result);
+				}
+				Ok(EngineControlMessage::RestoreSnapshot {
+					snapshot,
+					respond_to,
+				}) => {
+					// Restore state from snapshot
+					let result = Self::restore_snapshot_internal(&mut state, snapshot);
+					let _ = respond_to.send(result);
+				}
+				Ok(EngineControlMessage::ReplayEvents { events, respond_to }) => {
+					// Replay events to rebuild state
+					let result = Self::replay_events_internal(&mut state, events);
+					let _ = respond_to.send(result);
+				}
+				Ok(EngineControlMessage::Shutdown) => {
+					info!(target: "engine", "Received shutdown signal via control channel");
+					break;
+				}
+				Err(mpsc::error::TryRecvError::Empty) => {
+					// No control messages, continue with order processing
+				}
+				Err(mpsc::error::TryRecvError::Disconnected) => {
+					warn!(target: "engine", "Control channel disconnected");
+					break;
+				}
 			}
 
 			// Blocking receive from ingress queue
@@ -176,7 +227,7 @@ impl MatchingEngine {
 			}
 
 			// Process the order command
-			if let Err(e) = Self::process_order(state, cmd.clone(), event_producer, journal) {
+			if let Err(e) = Self::process_order(&mut state, cmd.clone(), event_producer, journal) {
 				error!(
 					target: "engine",
 					order_id = %cmd.order_id,
@@ -192,7 +243,7 @@ impl MatchingEngine {
 		state: &mut MatchingEngineState,
 		cmd: OrderCommand,
 		event_producer: &EventProducer,
-		journal: &Arc<std::sync::Mutex<Box<dyn OrderJournal>>>,
+		_journal: &Arc<std::sync::Mutex<Box<dyn OrderJournal>>>,
 	) -> Result<(), EngineError> {
 		let order_size = cmd.size;
 		let order_id = cmd.order_id.clone();
@@ -201,16 +252,18 @@ impl MatchingEngine {
 
 		// Try to match the order
 		while order.remaining_size > 0 {
-			let trade = match order.side {
+			let match_result = match order.side {
 				Side::Buy => Self::try_match_buy(&mut state.orderbook, &order),
 				Side::Sell => Self::try_match_sell(&mut state.orderbook, &order),
 			};
 
-			match trade {
-				Some(trade) => {
+			match match_result {
+				Some(result) => {
+					let trade = result.trade.clone();
 					order.remaining_size -= trade.size;
-					state.next_sequence += 1;
 
+					// 1. Emit TradeExecuted event
+					state.next_sequence += 1;
 					debug!(
 						order_id = %order_id,
 						trade_id = %trade.trade_id,
@@ -223,14 +276,50 @@ impl MatchingEngine {
 						"Trade executed"
 					);
 
-					let event = MatchingEvent::TradeExecuted {
+					let trade_event = MatchingEvent::TradeExecuted {
 						seq: state.next_sequence,
 						trade: trade.clone(),
 						timestamp: Self::timestamp(),
 					};
-
 					event_producer
-						.push(event)
+						.push(trade_event)
+						.map_err(|_| EngineError::EventBufferFull)?;
+
+					// 2. Emit Maker order status event
+					state.next_sequence += 1;
+					let maker_event = if result.maker_was_fully_filled {
+						debug!(
+							maker_order_id = %result.maker_order_id,
+							filled_size = trade.size,
+							seq = state.next_sequence,
+							"Maker order fully filled"
+						);
+						MatchingEvent::MakerOrderFilled {
+							seq: state.next_sequence,
+							order_id: result.maker_order_id.clone(),
+							market: order.market.clone(),
+							filled_size: trade.size,
+							timestamp: Self::timestamp(),
+						}
+					} else {
+						debug!(
+							maker_order_id = %result.maker_order_id,
+							filled_size = trade.size,
+							remaining_size = result.maker_remaining_size,
+							seq = state.next_sequence,
+							"Maker order partially filled"
+						);
+						MatchingEvent::MakerOrderPartiallyFilled {
+							seq: state.next_sequence,
+							order_id: result.maker_order_id.clone(),
+							market: order.market.clone(),
+							filled_size: trade.size,
+							remaining_size: result.maker_remaining_size,
+							timestamp: Self::timestamp(),
+						}
+					};
+					event_producer
+						.push(maker_event)
 						.map_err(|_| EngineError::EventBufferFull)?;
 
 					trades.push(trade);
@@ -265,8 +354,7 @@ impl MatchingEngine {
 				.push(event)
 				.map_err(|_| EngineError::EventBufferFull)?;
 
-			// Mark order as completed in journal
-			journal.lock().unwrap().mark_completed(&order.order_id);
+			// Note: mark_completed is now called by EventWriter after commit
 		} else if !trades.is_empty() {
 			// Partially filled
 			let remaining_size = order.remaining_size;
@@ -352,7 +440,7 @@ impl MatchingEngine {
 	}
 
 	/// Try to match a buy order against the ask side
-	fn try_match_buy(orderbook: &mut OrderBook, taker_order: &Order) -> Option<Trade> {
+	fn try_match_buy(orderbook: &mut OrderBook, taker_order: &Order) -> Option<MatchResult> {
 		let best_ask = orderbook.best_ask()?;
 
 		// Check if prices cross
@@ -365,17 +453,16 @@ impl MatchingEngine {
 
 		let match_price = maker_order.price;
 		let match_size = taker_order.remaining_size.min(maker_order.remaining_size);
+		let maker_was_fully_filled = maker_order.remaining_size == match_size;
+		let maker_remaining_size = maker_order.remaining_size - match_size;
 
 		// Update maker order
-		if maker_order.remaining_size == match_size {
+		if maker_was_fully_filled {
 			// Maker fully filled, remove it
 			ask_level.remove_first_order();
 		} else {
 			// Maker partially filled, update size
-			ask_level.update_order_size(
-				&maker_order.order_id,
-				maker_order.remaining_size - match_size,
-			);
+			ask_level.update_order_size(&maker_order.order_id, maker_remaining_size);
 		}
 
 		// Clean up empty level
@@ -383,20 +470,27 @@ impl MatchingEngine {
 			// Level will be removed automatically by BTreeMap entry API
 		}
 
-		Some(Trade {
+		let trade = Trade {
 			trade_id: format!("trade_{}", uuid::Uuid::new_v4()),
 			market: taker_order.market.clone(),
 			price: match_price,
 			size: match_size,
 			side: Side::Buy,
 			timestamp: Self::timestamp(),
-			maker_order_id: maker_order.order_id,
+			maker_order_id: maker_order.order_id.clone(),
 			taker_order_id: taker_order.order_id.clone(),
+		};
+
+		Some(MatchResult {
+			trade,
+			maker_order_id: maker_order.order_id,
+			maker_was_fully_filled,
+			maker_remaining_size,
 		})
 	}
 
 	/// Try to match a sell order against the bid side
-	fn try_match_sell(orderbook: &mut OrderBook, taker_order: &Order) -> Option<Trade> {
+	fn try_match_sell(orderbook: &mut OrderBook, taker_order: &Order) -> Option<MatchResult> {
 		let best_bid = orderbook.best_bid()?;
 
 		// Check if prices cross
@@ -409,28 +503,34 @@ impl MatchingEngine {
 
 		let match_price = maker_order.price;
 		let match_size = taker_order.remaining_size.min(maker_order.remaining_size);
+		let maker_was_fully_filled = maker_order.remaining_size == match_size;
+		let maker_remaining_size = maker_order.remaining_size - match_size;
 
 		// Update maker order
-		if maker_order.remaining_size == match_size {
+		if maker_was_fully_filled {
 			// Maker fully filled, remove it
 			bid_level.remove_first_order();
 		} else {
 			// Maker partially filled, update size
-			bid_level.update_order_size(
-				&maker_order.order_id,
-				maker_order.remaining_size - match_size,
-			);
+			bid_level.update_order_size(&maker_order.order_id, maker_remaining_size);
 		}
 
-		Some(Trade {
+		let trade = Trade {
 			trade_id: format!("trade_{}", uuid::Uuid::new_v4()),
 			market: taker_order.market.clone(),
 			price: match_price,
 			size: match_size,
 			side: Side::Sell,
 			timestamp: Self::timestamp(),
-			maker_order_id: maker_order.order_id,
+			maker_order_id: maker_order.order_id.clone(),
 			taker_order_id: taker_order.order_id.clone(),
+		};
+
+		Some(MatchResult {
+			trade,
+			maker_order_id: maker_order.order_id,
+			maker_was_fully_filled,
+			maker_remaining_size,
 		})
 	}
 
@@ -441,10 +541,8 @@ impl MatchingEngine {
 			.as_secs()
 	}
 
-	/// Create a snapshot of current engine state
-	pub fn create_snapshot(&self) -> Result<Snapshot, String> {
-		let state = self.state_handle.lock().unwrap();
-
+	/// Internal helper to create a snapshot from state (called within matching loop)
+	fn create_snapshot_internal(state: &MatchingEngineState) -> Result<Snapshot, String> {
 		// Serialize orderbook to JSON
 		let state_data = serde_json::to_vec(&state.orderbook)
 			.map_err(|e| format!("Failed to serialize orderbook: {}", e))?;
@@ -462,10 +560,29 @@ impl MatchingEngine {
 		})
 	}
 
-	/// Restore engine state from a snapshot
-	pub fn restore_from_snapshot(&self, snapshot: Snapshot) -> Result<(), String> {
-		let mut state = self.state_handle.lock().unwrap();
+	/// Create a snapshot of current engine state
+	///
+	/// This method sends a snapshot request to the matching loop and waits for the response.
+	/// It does not block the matching loop - the loop processes the request when convenient.
+	pub fn create_snapshot(&self) -> Result<Snapshot, String> {
+		// Create a oneshot channel for the response
+		let (tx, rx) = oneshot::channel();
 
+		// Send snapshot request via control channel
+		self.control_tx
+			.blocking_send(EngineControlMessage::CreateSnapshot { respond_to: tx })
+			.map_err(|_| "Engine shut down or control channel full".to_string())?;
+
+		// Wait for the response
+		rx.blocking_recv()
+			.map_err(|_| "Snapshot request cancelled or engine stopped".to_string())?
+	}
+
+	/// Restore engine state from a snapshot (internal helper)
+	fn restore_snapshot_internal(
+		state: &mut MatchingEngineState,
+		snapshot: Snapshot,
+	) -> Result<(), String> {
 		let orderbook: OrderBook = serde_json::from_slice(&snapshot.state_data)
 			.map_err(|e| format!("Failed to deserialize orderbook: {}", e))?;
 
@@ -480,13 +597,32 @@ impl MatchingEngine {
 		Ok(())
 	}
 
-	/// Replay events to rebuild orderbook state
+	/// Restore engine state from a snapshot (public API using control channel)
+	pub fn restore_from_snapshot(&self, snapshot: Snapshot) -> Result<(), String> {
+		let (tx, rx) = oneshot::channel();
+
+		self.control_tx
+			.blocking_send(EngineControlMessage::RestoreSnapshot {
+				snapshot,
+				respond_to: tx,
+			})
+			.map_err(|_| "Engine shut down or control channel full".to_string())?;
+
+		rx.blocking_recv()
+			.map_err(|_| "Restore request cancelled or engine stopped".to_string())?
+	}
+
+	/// Replay events to rebuild orderbook state (internal helper)
 	///
 	/// This is used during crash recovery to replay events from the
 	/// last snapshot point to the current state.
-	pub fn replay_events(&self, events: Vec<MatchingEvent>) -> Result<(), String> {
-		let mut state = self.state_handle.lock().unwrap();
-
+	///
+	/// Events are replayed in sequence order to reconstruct the exact orderbook state.
+	/// Both taker and maker order state changes are handled.
+	fn replay_events_internal(
+		state: &mut MatchingEngineState,
+		events: Vec<MatchingEvent>,
+	) -> Result<(), String> {
 		info!("Replaying {} events...", events.len());
 
 		for event in events {
@@ -500,6 +636,7 @@ impl MatchingEngine {
 					timestamp,
 					..
 				} => {
+					// Order was accepted and added to book
 					let order = Order {
 						order_id,
 						market,
@@ -513,41 +650,76 @@ impl MatchingEngine {
 					state.orderbook.add_order(order);
 				}
 				MatchingEvent::OrderFilled { order_id, .. } => {
-					// Order fully filled, remove from book
-					// Note: may already be removed, so ignore error
+					// Taker order fully filled, remove from book
+					// Try both sides since we don't know which side it was on
 					let _ = state.orderbook.remove_order(Side::Buy, &order_id);
 					let _ = state.orderbook.remove_order(Side::Sell, &order_id);
 				}
-				MatchingEvent::OrderCancelled { order_id, .. } => {
-					// Order cancelled, remove from book
+				MatchingEvent::MakerOrderFilled { order_id, .. } => {
+					// Maker order fully filled, remove from book
 					let _ = state.orderbook.remove_order(Side::Buy, &order_id);
 					let _ = state.orderbook.remove_order(Side::Sell, &order_id);
-				}
-				MatchingEvent::TradeExecuted { trade, .. } => {
-					// Trade execution: update maker order size
-					// This is implicit in the OrderPartiallyFilled/OrderFilled events
-					// We don't need to replay individual size updates
-					let _ = trade;
 				}
 				MatchingEvent::OrderPartiallyFilled {
 					order_id,
 					remaining_size,
 					..
 				} => {
-					// Update order size in book
-					// Find the order and update its size
-					// This is complex; for MVP we rely on OrderAccepted events
-					// having the correct remaining size
-					let _ = (order_id, remaining_size);
+					// Taker order partially filled
+					// The order will be added to book with correct remaining_size
+					// in a subsequent OrderAccepted event, so we can ignore this
+					// or update if it's already in the book (edge case)
+					if let Some(order) = state.orderbook.find_order_mut(&order_id) {
+						order.remaining_size = remaining_size;
+					}
+				}
+				MatchingEvent::MakerOrderPartiallyFilled {
+					order_id,
+					remaining_size,
+					..
+				} => {
+					// Maker order partially filled, update size in book
+					if let Some(order) = state.orderbook.find_order_mut(&order_id) {
+						order.remaining_size = remaining_size;
+					} else {
+						warn!("Maker order {} not found in book during replay", order_id);
+					}
+				}
+				MatchingEvent::OrderCancelled { order_id, .. } => {
+					// Order cancelled, remove from book
+					let _ = state.orderbook.remove_order(Side::Buy, &order_id);
+					let _ = state.orderbook.remove_order(Side::Sell, &order_id);
+				}
+				MatchingEvent::TradeExecuted { .. } => {
+					// TradeExecuted events are for audit/history
+					// The actual state changes are captured in:
+					// - MakerOrderPartiallyFilled / MakerOrderFilled
+					// - OrderPartiallyFilled / OrderFilled
+					// So we don't need to process TradeExecuted during replay
 				}
 				MatchingEvent::OrderRejected { .. } => {
-					// Rejected orders never enter the book
+					// Rejected orders never entered the book, no state change
 				}
 			}
 		}
 
 		info!("Event replay complete");
 		Ok(())
+	}
+
+	/// Replay events to rebuild orderbook state (public API using control channel)
+	pub fn replay_events(&self, events: Vec<MatchingEvent>) -> Result<(), String> {
+		let (tx, rx) = oneshot::channel();
+
+		self.control_tx
+			.blocking_send(EngineControlMessage::ReplayEvents {
+				events,
+				respond_to: tx,
+			})
+			.map_err(|_| "Engine shut down or control channel full".to_string())?;
+
+		rx.blocking_recv()
+			.map_err(|_| "Replay request cancelled or engine stopped".to_string())?
 	}
 
 	/// Shutdown the matching engine gracefully

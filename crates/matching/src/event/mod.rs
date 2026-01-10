@@ -96,6 +96,25 @@ pub enum MatchingEvent {
 		trade: Trade,
 		timestamp: u64,
 	},
+
+	/// Maker order was partially filled (part of its size was matched)
+	MakerOrderPartiallyFilled {
+		seq: SequenceNumber,
+		order_id: String,
+		market: String,
+		filled_size: u64,
+		remaining_size: u64,
+		timestamp: u64,
+	},
+
+	/// Maker order was completely filled and removed from book
+	MakerOrderFilled {
+		seq: SequenceNumber,
+		order_id: String,
+		market: String,
+		filled_size: u64,
+		timestamp: u64,
+	},
 }
 
 impl MatchingEvent {
@@ -108,6 +127,8 @@ impl MatchingEvent {
 			MatchingEvent::OrderPartiallyFilled { seq, .. } => *seq,
 			MatchingEvent::OrderCancelled { seq, .. } => *seq,
 			MatchingEvent::TradeExecuted { seq, .. } => *seq,
+			MatchingEvent::MakerOrderPartiallyFilled { seq, .. } => *seq,
+			MatchingEvent::MakerOrderFilled { seq, .. } => *seq,
 		}
 	}
 
@@ -120,6 +141,8 @@ impl MatchingEvent {
 			MatchingEvent::OrderPartiallyFilled { order_id, .. } => Some(order_id),
 			MatchingEvent::OrderCancelled { order_id, .. } => Some(order_id),
 			MatchingEvent::TradeExecuted { .. } => None,
+			MatchingEvent::MakerOrderPartiallyFilled { order_id, .. } => Some(order_id),
+			MatchingEvent::MakerOrderFilled { order_id, .. } => Some(order_id),
 		}
 	}
 
@@ -132,6 +155,8 @@ impl MatchingEvent {
 			MatchingEvent::OrderPartiallyFilled { market, .. } => market,
 			MatchingEvent::OrderCancelled { market, .. } => market,
 			MatchingEvent::TradeExecuted { trade, .. } => &trade.market,
+			MatchingEvent::MakerOrderPartiallyFilled { market, .. } => market,
+			MatchingEvent::MakerOrderFilled { market, .. } => market,
 		}
 	}
 
@@ -139,12 +164,14 @@ impl MatchingEvent {
 	///
 	/// Returns true for events that indicate an order has completed its lifecycle:
 	/// - OrderFilled (fully matched)
+	/// - MakerOrderFilled (maker fully matched)
 	/// - OrderCancelled (removed from book)
 	/// - OrderRejected (never entered book)
 	pub fn is_order_complete(&self) -> bool {
 		matches!(
 			self,
 			MatchingEvent::OrderFilled { .. }
+				| MatchingEvent::MakerOrderFilled { .. }
 				| MatchingEvent::OrderCancelled { .. }
 				| MatchingEvent::OrderRejected { .. }
 		)

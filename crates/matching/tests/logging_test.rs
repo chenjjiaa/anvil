@@ -135,7 +135,12 @@ fn test_structured_logging_in_components() {
 		batch_timeout_ms: 50,
 		verbose_logging: true, // Enable verbose logging for test
 	};
-	let _event_writer = EventWriter::start(event_consumer, event_storage, event_writer_config);
+	let _event_writer = EventWriter::start(
+		event_consumer,
+		event_storage,
+		journal.clone(),
+		event_writer_config,
+	);
 
 	// Start matching engine (this will log)
 	let engine_config = EngineConfig {

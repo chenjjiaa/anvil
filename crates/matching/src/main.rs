@@ -76,7 +76,12 @@ async fn main() -> Result<()> {
 		batch_timeout_ms: config.event_batch_timeout_ms,
 		verbose_logging: config.verbose_logging,
 	};
-	let _event_writer = EventWriter::start(event_consumer, event_storage, event_writer_config);
+	let _event_writer = EventWriter::start(
+		event_consumer,
+		event_storage,
+		journal.clone(),
+		event_writer_config,
+	);
 
 	// Phase 5: Start Matching Engine (single-threaded core)
 	info!(target: "server", "Starting matching engine core...");

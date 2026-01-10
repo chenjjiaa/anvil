@@ -47,7 +47,12 @@ fn test_single_match() {
 
 	let event_storage = Box::new(MemoryEventStorage::new());
 	let event_writer_config = EventWriterConfig::default();
-	let _event_writer = EventWriter::start(event_consumer, event_storage, event_writer_config);
+	let _event_writer = EventWriter::start(
+		event_consumer,
+		event_storage,
+		journal.clone(),
+		event_writer_config,
+	);
 
 	let engine_config = EngineConfig {
 		market: "BTC-USDT".to_string(),

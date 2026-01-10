@@ -240,6 +240,30 @@ impl OrderBook {
 		self.bids.clear();
 		self.asks.clear();
 	}
+
+	/// Find an order by ID and return a mutable reference (for replay/update)
+	///
+	/// This method is primarily used during event replay to update order state.
+	/// It searches both bid and ask sides to locate the order.
+	pub fn find_order_mut(&mut self, order_id: &str) -> Option<&mut Order> {
+		// Search in bids first
+		for level in self.bids.values_mut() {
+			for order in &mut level.orders {
+				if order.order_id == order_id {
+					return Some(order);
+				}
+			}
+		}
+		// Then search in asks
+		for level in self.asks.values_mut() {
+			for order in &mut level.orders {
+				if order.order_id == order_id {
+					return Some(order);
+				}
+			}
+		}
+		None
+	}
 }
 
 #[cfg(test)]

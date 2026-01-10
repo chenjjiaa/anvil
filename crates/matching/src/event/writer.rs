@@ -14,7 +14,7 @@
 
 use std::{
 	sync::{
-		Arc,
+		Arc, Mutex,
 		atomic::{AtomicBool, Ordering},
 	},
 	thread::{self, JoinHandle},
@@ -25,6 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use super::{EventBatch, EventStorage, MatchingEvent};
 use crate::event::buffer::EventConsumer;
+use crate::journal::OrderJournal;
 
 /// Configuration for the Event Writer
 #[derive(Debug, Clone)]
@@ -74,9 +75,13 @@ impl EventWriter {
 	///
 	/// The writer runs in a background thread, continuously consuming
 	/// events from the buffer and writing them to storage.
+	///
+	/// After successfully committing events, the writer releases idempotency keys
+	/// by calling mark_completed on the journal for all completed orders.
 	pub fn start(
 		consumer: EventConsumer,
 		mut storage: Box<dyn EventStorage>,
+		journal: Arc<Mutex<Box<dyn OrderJournal>>>,
 		config: EventWriterConfig,
 	) -> Self {
 		let shutdown = Arc::new(AtomicBool::new(false));
@@ -86,7 +91,13 @@ impl EventWriter {
 			.name("event-writer".to_string())
 			.spawn(move || {
 				info!(target: "event_writer", "Event writer started");
-				Self::run_writer_loop(&consumer, storage.as_mut(), &config, &shutdown_clone);
+				Self::run_writer_loop(
+					&consumer,
+					storage.as_mut(),
+					&journal,
+					&config,
+					&shutdown_clone,
+				);
 				info!(target: "event_writer", "Event writer stopped");
 			})
 			.expect("Failed to spawn event writer thread");
@@ -101,6 +112,7 @@ impl EventWriter {
 	fn run_writer_loop(
 		consumer: &EventConsumer,
 		storage: &mut dyn EventStorage,
+		journal: &Arc<Mutex<Box<dyn OrderJournal>>>,
 		config: &EventWriterConfig,
 		shutdown: &Arc<AtomicBool>,
 	) {
@@ -121,6 +133,8 @@ impl EventWriter {
 							"Failed to commit final batch during shutdown"
 						);
 					} else {
+						// Release idempotency keys for completed orders
+						Self::release_completed_keys(journal, &pending_events);
 						info!(
 							target: "event_writer",
 							batch_size = batch_size,
@@ -162,6 +176,9 @@ impl EventWriter {
 						let duration = start.elapsed();
 						let first_seq = pending_events.first().map(|e| e.sequence()).unwrap_or(0);
 
+						// Commit succeeded, now release idempotency keys for completed orders
+						Self::release_completed_keys(journal, &pending_events);
+
 						if config.verbose_logging {
 							debug!(
 								target: "event_writer",
@@ -191,8 +208,9 @@ impl EventWriter {
 							error = %e,
 							"Failed to commit event batch"
 						);
+						// Commit failed: do NOT release idempotency keys
+						// Events will be retried on next iteration
 						// In production, this should trigger alerting
-						// For now, we'll retry on next iteration
 						thread::sleep(Duration::from_millis(100));
 					}
 				}
@@ -217,6 +235,25 @@ impl EventWriter {
 		storage
 			.append_batch(batch)
 			.map_err(|e| format!("Storage error: {}", e))
+	}
+
+	/// Release idempotency keys for completed orders after successful commit
+	///
+	/// This is called after events have been durably committed to storage.
+	/// Only completed orders (OrderFilled, MakerOrderFilled, OrderCancelled, OrderRejected)
+	/// have their idempotency keys released.
+	fn release_completed_keys(
+		journal: &Arc<Mutex<Box<dyn OrderJournal>>>,
+		events: &[MatchingEvent],
+	) {
+		let mut journal = journal.lock().unwrap();
+		for event in events {
+			if event.is_order_complete()
+				&& let Some(order_id) = event.order_id()
+			{
+				journal.mark_completed(order_id);
+			}
+		}
 	}
 
 	/// Shutdown the event writer gracefully
@@ -266,6 +303,10 @@ mod tests {
 		let buffer = EventBuffer::new(100);
 		let (producer, consumer) = buffer.split();
 		let storage = Box::new(MemoryEventStorage::new());
+		let journal = Arc::new(Mutex::new(
+			Box::new(crate::journal::MemoryOrderJournal::new())
+				as Box<dyn crate::journal::OrderJournal>,
+		));
 
 		let config = EventWriterConfig {
 			batch_size: 5,
@@ -273,7 +314,7 @@ mod tests {
 			verbose_logging: false,
 		};
 
-		let writer = EventWriter::start(consumer, storage, config);
+		let writer = EventWriter::start(consumer, storage, journal, config);
 
 		// Push some events
 		for i in 0..10 {
