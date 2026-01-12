@@ -23,6 +23,7 @@ debug
 logs/
 tmp/
 .env
+benchmark_results/
 
 # Python
 **/__pycache__/

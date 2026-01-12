@@ -1,0 +1,10 @@
+bind_addr = "0.0.0.0:50051"
+market = "BTC-USDT"
+settlement_endpoint = "http://localhost:50052"
+ingress_queue_size = 1000000
+event_buffer_size = 1000000
+event_batch_size = 5000
+event_batch_timeout_ms = 50
+snapshot_interval_secs = 9999999
+max_snapshots_to_keep = 1
+verbose_logging = false

@@ -13,6 +13,14 @@ path = "src/lib.rs"
 name = "anvil-matching"
 path = "src/main.rs"
 
+[[bin]]
+name = "bench-server"
+path = "src/bin/bench_server.rs"
+
+[[bench]]
+name = "engine_throughput"
+harness = false
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 anyhow = { workspace = true }
@@ -42,3 +50,6 @@ dashmap = { workspace = true }
 crossbeam = "^0.8"
 serde_json.workspace = true
 dotenv = "^0.15"
+
+[dev-dependencies]
+criterion = { version = "^0.7", features = ["html_reports"] }

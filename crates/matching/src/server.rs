@@ -215,10 +215,10 @@ impl MatchingService for MatchingServiceImpl {
 						// The order will be processed but without idempotency protection
 						// This should be extremely rare with in-memory journal
 						warn!(
-							order_id = %cmd.order_id,
-							error = %e,
-							"Journal append failed after successful enqueue - order will be processed without idempotency protection"
-						);
+						order_id = %cmd.order_id,
+						error = %e,
+								"Journal append failed after successful enqueue - order will be processed without idempotency protection"
+							);
 						// We still return Accepted because the order is in the queue
 						// The warning above should trigger monitoring alerts
 					}
