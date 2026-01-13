@@ -52,4 +52,4 @@ serde_json.workspace = true
 dotenv = "^0.15"
 
 [dev-dependencies]
-criterion = { version = "^0.7", features = ["html_reports"] }
+criterion = { version = "^0.8", features = ["html_reports"] }
