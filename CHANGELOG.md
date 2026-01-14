@@ -6,46 +6,49 @@
 
 ### Miscellaneous Tasks
 
-- **(release)** add automated release workflow with changelog generation (by @itscheems) - ([9649cff](https://github.com/itscheems/anvil/commit/9649cff0cf216928f56a72be5d70bfb9f63561d5))
+- **(release)** add automated release workflow with changelog generation (by @[itscheems](https://github.com/itscheems)) - ([9649cff](https://github.com/itscheems/anvil/commit/9649cff0cf216928f56a72be5d70bfb9f63561d5))
 
+## New Contributors ❤️
+
+* @github-actions[bot] made their first contribution
 ## [v0.1.0] - 2026-01-14
 
 ### Features
 
-- **(anvil-gateway)** add distributed tracing and improve replay protection (by @itscheems) - ([b7cfd22](https://github.com/itscheems/anvil/commit/b7cfd2221a505df132ceef022ea1f9d19c77d629))
-- **(anvil-gateway)** add replay protection and enhance auth protocol (by @itscheems) - ([ec6e546](https://github.com/itscheems/anvil/commit/ec6e546f0e20864c8bdc174b39c3e352ecd286f2))
-- **(anvil-gateway)** add file-based logging with optional console output (by @itscheems) - ([cdcece8](https://github.com/itscheems/anvil/commit/cdcece8fa5a13d109be6157f15503ab8594591ef))
-- **(anvil-matching)** add structured logging and OpenTelemetry tracing support (by @itscheems) - ([7293607](https://github.com/itscheems/anvil/commit/72936075acadea414546e482f6a0137ac36fd729))
-- project initialization (by @itscheems) - ([8e3aae3](https://github.com/itscheems/anvil/commit/8e3aae32aee55b87b1f6992b9439727e6724ba59))
-- project initialization (by @itscheems) - ([293f99c](https://github.com/itscheems/anvil/commit/293f99c48ee99f17a5ceb6f886234f7eeba340a6))
+- **(anvil-gateway)** add distributed tracing and improve replay protection (by @[itscheems](https://github.com/itscheems)) - ([b7cfd22](https://github.com/itscheems/anvil/commit/b7cfd2221a505df132ceef022ea1f9d19c77d629))
+- **(anvil-gateway)** add replay protection and enhance auth protocol (by @[itscheems](https://github.com/itscheems)) - ([ec6e546](https://github.com/itscheems/anvil/commit/ec6e546f0e20864c8bdc174b39c3e352ecd286f2))
+- **(anvil-gateway)** add file-based logging with optional console output (by @[itscheems](https://github.com/itscheems)) - ([cdcece8](https://github.com/itscheems/anvil/commit/cdcece8fa5a13d109be6157f15503ab8594591ef))
+- **(anvil-matching)** add structured logging and OpenTelemetry tracing support (by @[itscheems](https://github.com/itscheems)) - ([7293607](https://github.com/itscheems/anvil/commit/72936075acadea414546e482f6a0137ac36fd729))
+- project initialization (by @[itscheems](https://github.com/itscheems)) - ([8e3aae3](https://github.com/itscheems/anvil/commit/8e3aae32aee55b87b1f6992b9439727e6724ba59))
+- project initialization (by @[itscheems](https://github.com/itscheems)) - ([293f99c](https://github.com/itscheems/anvil/commit/293f99c48ee99f17a5ceb6f886234f7eeba340a6))
 
 ### Bug Fixes
 
-- ci (by @itscheems) - ([4c6f085](https://github.com/itscheems/anvil/commit/4c6f08530b9b5a01b7bfb269abbc75aa04996197))
+- ci (by @[itscheems](https://github.com/itscheems)) - ([4c6f085](https://github.com/itscheems/anvil/commit/4c6f08530b9b5a01b7bfb269abbc75aa04996197))
 
 ### Refactor
 
-- **(anvil-gateway)** decouple protocol and enforce metadata-only authentication (by @itscheems) - ([9fcc7a5](https://github.com/itscheems/anvil/commit/9fcc7a50f584959763b6d76bf9d04c126068b234))
-- **(anvil-matching)** fix semantic correctness issues and crash recovery (by @itscheems) - ([70a795c](https://github.com/itscheems/anvil/commit/70a795c316600e77d257ac3e6c0167c94c384c84))
-- **(anvil-matching)** migrate to single-threaded event-driven architecture (by @itscheems) - ([6ba5d06](https://github.com/itscheems/anvil/commit/6ba5d06c7189171299d5ddb1ed2232f018090e78))
-- **(gateway)** extract server config loading to separate method (by @itscheems) - ([343a752](https://github.com/itscheems/anvil/commit/343a752569da87065e6b378536899caabed69937))
-- rename router to dispatcher and user_id to public_key (by @itscheems) - ([f100a24](https://github.com/itscheems/anvil/commit/f100a24b9833e94e95369a5155af7fca1710b12e))
-- use anyhow for error handling and improve dependency management (by @itscheems) - ([6c89823](https://github.com/itscheems/anvil/commit/6c898238d3e2fc6ceda0dbd7dce10219c39791ed))
+- **(anvil-gateway)** decouple protocol and enforce metadata-only authentication (by @[itscheems](https://github.com/itscheems)) - ([9fcc7a5](https://github.com/itscheems/anvil/commit/9fcc7a50f584959763b6d76bf9d04c126068b234))
+- **(anvil-matching)** fix semantic correctness issues and crash recovery (by @[itscheems](https://github.com/itscheems)) - ([70a795c](https://github.com/itscheems/anvil/commit/70a795c316600e77d257ac3e6c0167c94c384c84))
+- **(anvil-matching)** migrate to single-threaded event-driven architecture (by @[itscheems](https://github.com/itscheems)) - ([6ba5d06](https://github.com/itscheems/anvil/commit/6ba5d06c7189171299d5ddb1ed2232f018090e78))
+- **(gateway)** extract server config loading to separate method (by @[itscheems](https://github.com/itscheems)) - ([343a752](https://github.com/itscheems/anvil/commit/343a752569da87065e6b378536899caabed69937))
+- rename router to dispatcher and user_id to public_key (by @[itscheems](https://github.com/itscheems)) - ([f100a24](https://github.com/itscheems/anvil/commit/f100a24b9833e94e95369a5155af7fca1710b12e))
+- use anyhow for error handling and improve dependency management (by @[itscheems](https://github.com/itscheems)) - ([6c89823](https://github.com/itscheems/anvil/commit/6c898238d3e2fc6ceda0dbd7dce10219c39791ed))
 
 ### Documentation
 
-- define Order Admission Contract between anvil-gateway and matching engine (by @itscheems) - ([249ed92](https://github.com/itscheems/anvil/commit/249ed9296f7ae3b6a97213ae990f09efedc77f76))
+- define Order Admission Contract between anvil-gateway and matching engine (by @[itscheems](https://github.com/itscheems)) - ([249ed92](https://github.com/itscheems/anvil/commit/249ed9296f7ae3b6a97213ae990f09efedc77f76))
 
 ### Testing
 
-- **(anvil-matching)** add comprehensive performance benchmark suite (by @itscheems) - ([aa33ca8](https://github.com/itscheems/anvil/commit/aa33ca897e281c7d0ef921c0cad986cd16c5500f))
-- **(anvil-matching)** add logging system integration tests (by @itscheems) - ([fd6c114](https://github.com/itscheems/anvil/commit/fd6c114fe319833f6319ebac1a2f0906a715bffe))
+- **(anvil-matching)** add comprehensive performance benchmark suite (by @[itscheems](https://github.com/itscheems)) - ([aa33ca8](https://github.com/itscheems/anvil/commit/aa33ca897e281c7d0ef921c0cad986cd16c5500f))
+- **(anvil-matching)** add logging system integration tests (by @[itscheems](https://github.com/itscheems)) - ([fd6c114](https://github.com/itscheems/anvil/commit/fd6c114fe319833f6319ebac1a2f0906a715bffe))
 
 ### Miscellaneous Tasks
 
-- update static resources (by @itscheems) - ([6a09944](https://github.com/itscheems/anvil/commit/6a09944894390f4fab590131320fe760752469ef))
-- update some (by @itscheems) - ([ee19b5c](https://github.com/itscheems/anvil/commit/ee19b5ce42cb0c7a9fc6241cedf9b40716e0c855))
-- add protobuf-compiler (by @itscheems) - ([cd494c3](https://github.com/itscheems/anvil/commit/cd494c3110a48607b2d235afb2d80f9a3d5bd4e4))
+- update static resources (by @[itscheems](https://github.com/itscheems)) - ([6a09944](https://github.com/itscheems/anvil/commit/6a09944894390f4fab590131320fe760752469ef))
+- update some (by @[itscheems](https://github.com/itscheems)) - ([ee19b5c](https://github.com/itscheems/anvil/commit/ee19b5ce42cb0c7a9fc6241cedf9b40716e0c855))
+- add protobuf-compiler (by @[itscheems](https://github.com/itscheems)) - ([cd494c3](https://github.com/itscheems/anvil/commit/cd494c3110a48607b2d235afb2d80f9a3d5bd4e4))
 
 ## New Contributors ❤️
 
