@@ -2,7 +2,8 @@
 
 # Changelog
 
-## [unreleased]
+## [v0.1.1] - 2026-01-14
+
 ### Miscellaneous Tasks
 
 - **(release)** add automated release workflow with changelog generation (by @itscheems) - ([9649cff](https://github.com/itscheems/anvil/commit/9649cff0cf216928f56a72be5d70bfb9f63561d5))
