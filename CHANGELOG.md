@@ -2,7 +2,11 @@
 
 # Changelog
 
-## [v0.1.1] - 2026-01-14
+## [v0.1.1] - 2026-01-15
+
+### Bug Fixes
+
+- **(ci)** improve release workflow reliability and workflow dispatch support (by @[itscheems](https://github.com/itscheems)) - ([746915f](https://github.com/itscheems/anvil/commit/746915f7d5f3d912c6122222125f28e0a83e5ffc))
 
 ### Miscellaneous Tasks
 
